@@ -1,0 +1,23 @@
+# Business data - DO NOT upload
+data/fabric_prices.xlsx
+data/trim_prices.xlsx
+data/graphic_prices.xlsx
+data/saved_boms/
+data/saved_costs/
+data/saved_styles/
+data/PINK_Costing_DB.xlsx
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Test files
+test_*.xlsx
+
+# OS
+.DS_Store
+Thumbs.db
+
+# BOM files
+BOM_Extract*.xlsx
