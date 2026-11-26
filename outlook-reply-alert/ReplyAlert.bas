@@ -5,6 +5,8 @@ Attribute VB_Name = "ReplyAlert"
 '  - 받은 메일이 "내가 보낸 메일에 대한 회신"이면
 '      1) 빨간색 범주 [내 메일 회신] 을 붙여 목록에서 눈에 띄게 표시
 '      2) Windows 알림(화면 오른쪽 아래)으로 보낸 사람 / 제목 표시
+'      3) 알림을 클릭하면 해당 메일이 열림, [회신 목록 보기] 버튼은 목록 폴더 열기
+'      4) 회신만 모아 보는 검색 폴더 [내 메일 회신] 을 자동 생성 + 즐겨찾기에 추가
 '  - 판단 방법
 '      1) 받은 메일의 In-Reply-To 헤더(어떤 메일에 대한 답장인지)를
 '         보낸 편지함의 메일 ID 와 비교
@@ -23,15 +25,19 @@ Attribute VB_Name = "ReplyAlert"
 '    End Sub
 '
 '  수동 실행 매크로 (Alt+F8)
-'    ScanRecentInbox   : 최근 받은 메일을 검사해서 회신 표시 (기본 7일)
+'    ShowReplyList     : 회신 목록(검색 폴더) 열기
+'    ScanRecentInbox   : 최근 받은 메일을 검사해서 회신 표시 (기본 14일)
 '    TestSelectedMail  : 선택한 메일이 왜 회신으로 판단됐는지/안 됐는지 진단
-'    TestToast         : Windows 알림이 뜨는지 테스트
+'    TestToast         : Windows 알림 테스트 (메일을 선택하고 실행하면 클릭 시 그 메일이 열림)
 '    ClearReplyMark    : 선택한 메일에서 [내 메일 회신] 표시 제거
 '==========================================================================
 Option Explicit
 
 '------------------------------ 설정 ------------------------------
 Public Const CATEGORY_NAME As String = "내 메일 회신"   ' 표시용 범주 이름 (빨간색으로 자동 생성)
+Public Const LIST_FOLDER_NAME As String = "내 메일 회신" ' 회신 목록 검색 폴더 이름
+Private Const CREATE_REPLY_LIST As Boolean = True   ' 검색 폴더 자동 생성 + 즐겨찾기 추가
+Private Const CLICK_TO_OPEN As Boolean = True       ' 알림 클릭 시 메일 열기
 
 Private Const SHOW_TOAST As Boolean = True          ' Windows 알림 표시
 Private Const SHOW_POPUP As Boolean = False         ' 메시지 박스 표시 (확인 누를 때까지 Outlook 멈춤)
@@ -45,7 +51,7 @@ Private Const MATCH_WHOLE_THREAD As Boolean = False
 Private Const USE_CONVERSATION_FALLBACK As Boolean = True ' 대화(스레드) 기반 보조 판단
 Private Const SKIP_AUTO_REPLIES As Boolean = True   ' 부재중 자동회신 등은 제외
 
-Private Const SCAN_DAYS As Long = 7                 ' ScanRecentInbox 검사 기간(일)
+Private Const SCAN_DAYS As Long = 14               ' ScanRecentInbox 검사 기간(일)
 Private Const STARTUP_SCAN_DAYS As Long = 1         ' Outlook 시작 시 검사 기간(일), 0 = 안 함
 
 ' 내 주소가 여러 개(별칭)면 세미콜론으로 추가: "a@company.com;b@company.com"
@@ -59,8 +65,10 @@ Private Const PR_TRANSPORT_MESSAGE_HEADERS As String = "http://schemas.microsoft
 Private Const PR_SENDER_SMTP_ADDRESS As String = "http://schemas.microsoft.com/mapi/proptag/0x5D01001F"
 
 Private Const TOAST_APP_ID As String = "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe"
+Private Const URI_SCHEME As String = "replyalert"   ' 알림 클릭용 주소 (replyalert:open/<EntryID>, replyalert:list)
 
 Private m_MyAddresses As String   ' ";a@x.com;b@y.com;" 형태 캐시
+Private m_HandlerReady As Boolean ' 클릭 처리기 설치 여부
 
 
 '==========================================================================
@@ -81,13 +89,16 @@ End Sub
 
 Public Sub OnStartup()
     Dim n As Long
-    If STARTUP_SCAN_DAYS <= 0 Then Exit Sub
     On Error Resume Next
+    If CLICK_TO_OPEN Then InstallClickHandler
+    If CREATE_REPLY_LIST Then EnsureReplyList
+    If STARTUP_SCAN_DAYS <= 0 Then Exit Sub
     n = ScanInbox(STARTUP_SCAN_DAYS)
     If n > 0 And SHOW_TOAST Then
         ShowToast "내 메일에 회신 " & n & "건", _
                   "Outlook 이 꺼져 있는 동안 도착한 회신입니다.", _
-                  "[" & CATEGORY_NAME & "] 범주로 표시했습니다."
+                  "클릭하면 회신 목록을 엽니다.", _
+                  URI_SCHEME & ":list", ""
     End If
 End Sub
 
@@ -100,10 +111,45 @@ Public Sub ScanRecentInbox()
     n = ScanInbox(SCAN_DAYS)
     MsgBox "최근 " & SCAN_DAYS & "일 받은 메일 중 내 메일에 대한 회신 " & n & "건을 새로 표시했습니다." & vbCrLf & _
            "(이미 표시된 메일은 제외)", vbInformation, "회신 알림"
+    If CREATE_REPLY_LIST Then ShowReplyList
 End Sub
 
+Public Sub ShowReplyList()
+    Dim sf As Object
+    On Error Resume Next
+    Set sf = FindReplyList()
+    If sf Is Nothing Then
+        EnsureReplyList
+        Set sf = FindReplyList()
+    End If
+    If sf Is Nothing Then
+        MsgBox "회신 목록 폴더를 찾지 못했습니다.", vbExclamation, "회신 알림"
+        Exit Sub
+    End If
+    If Application.ActiveExplorer Is Nothing Then
+        sf.Display
+    Else
+        Set Application.ActiveExplorer.CurrentFolder = sf
+    End If
+End Sub
+
+' 메일을 하나 선택하고 실행하면, 알림을 클릭했을 때 그 메일이 열리는지까지 확인 가능
 Public Sub TestToast()
-    ShowToast "내 메일에 회신이 왔습니다", "홍길동 (테스트)", "RE: 알림 테스트 메일"
+    Dim itm As Object, openUri As String, subj As String
+    On Error Resume Next
+    Set itm = Application.ActiveExplorer.Selection.Item(1)
+    If Not itm Is Nothing Then
+        openUri = URI_SCHEME & ":open/" & itm.EntryID
+        subj = itm.Subject
+    End If
+    On Error GoTo 0
+    If Len(openUri) = 0 Then
+        ShowToast "내 메일에 회신이 왔습니다", "홍길동 (테스트)", "RE: 알림 테스트 메일", _
+                  URI_SCHEME & ":list", ""
+    Else
+        ShowToast "내 메일에 회신이 왔습니다", "(테스트) 클릭하면 선택한 메일이 열립니다", subj, _
+                  openUri, openUri
+    End If
 End Sub
 
 Public Sub ClearReplyMark()
@@ -349,11 +395,12 @@ Private Sub MarkMail(ByVal mail As Object)
 End Sub
 
 Private Sub NotifyReply(ByVal mail As Object)
-    Dim sender As String, subj As String
+    Dim sender As String, subj As String, openUri As String
     On Error Resume Next
     sender = mail.SenderName
     subj = mail.Subject
-    If SHOW_TOAST Then ShowToast "내 메일에 회신이 왔습니다", sender, subj
+    openUri = URI_SCHEME & ":open/" & mail.EntryID
+    If SHOW_TOAST Then ShowToast "내 메일에 회신이 왔습니다", sender, subj, openUri, openUri
     If SHOW_POPUP Then
         MsgBox "내 메일에 회신이 왔습니다." & vbCrLf & vbCrLf & _
                "보낸 사람: " & sender & vbCrLf & "제목: " & subj, _
@@ -362,14 +409,35 @@ Private Sub NotifyReply(ByVal mail As Object)
 End Sub
 
 ' Windows 10/11 알림 (PowerShell 사용, 별도 설치 불필요)
-Private Sub ShowToast(ByVal title As String, ByVal line1 As String, ByVal line2 As String)
-    Dim xml As String, ps As String
+'   launchUri : 알림 본문을 클릭했을 때 열 주소 (replyalert:open/<EntryID> 또는 replyalert:list)
+'   openUri   : [메일 열기] 버튼 주소 (빈 문자열이면 버튼 없음)
+Private Sub ShowToast(ByVal title As String, ByVal line1 As String, ByVal line2 As String, _
+                      Optional ByVal launchUri As String = "", Optional ByVal openUri As String = "")
+    Dim xml As String, ps As String, head As String, actions As String
     On Error Resume Next
-    xml = "<toast duration=""long""><visual><binding template=""ToastGeneric"">" & _
+
+    If CLICK_TO_OPEN And Len(launchUri) > 0 Then
+        If Not m_HandlerReady Then InstallClickHandler
+    End If
+
+    If CLICK_TO_OPEN And m_HandlerReady And Len(launchUri) > 0 Then
+        head = "<toast activationType=""protocol"" launch=""" & XmlEsc(launchUri) & """ duration=""long"">"
+        actions = "<actions>"
+        If Len(openUri) > 0 Then
+            actions = actions & "<action content=""메일 열기"" activationType=""protocol"" arguments=""" & XmlEsc(openUri) & """/>"
+        End If
+        actions = actions & "<action content=""회신 목록 보기"" activationType=""protocol"" arguments=""" & URI_SCHEME & ":list""/>"
+        actions = actions & "</actions>"
+    Else
+        head = "<toast duration=""long"">"
+    End If
+
+    xml = head & "<visual><binding template=""ToastGeneric"">" & _
           "<text>" & XmlEsc(title) & "</text>" & _
           "<text>" & XmlEsc(line1) & "</text>" & _
           "<text>" & XmlEsc(line2) & "</text>" & _
-          "</binding></visual><audio src=""ms-winsoundevent:Notification.Mail""/></toast>"
+          "</binding></visual>" & actions & _
+          "<audio src=""ms-winsoundevent:Notification.Mail""/></toast>"
     ps = "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null;" & _
          "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null;" & _
          "$x = New-Object Windows.Data.Xml.Dom.XmlDocument;" & _
@@ -378,6 +446,135 @@ Private Sub ShowToast(ByVal title As String, ByVal line1 As String, ByVal line2 
          "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('" & TOAST_APP_ID & "').Show($t)"
     Shell "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand " & B64Utf16(ps), vbHide
 End Sub
+
+
+'==========================================================================
+'  회신 목록 (검색 폴더)
+'==========================================================================
+Private Function FindReplyList() As Object
+    Dim f As Object, nm As String
+    On Error Resume Next
+    For Each f In Application.Session.GetDefaultFolder(olFolderInbox).Store.GetSearchFolders
+        nm = ""
+        nm = f.Name
+        If nm = LIST_FOLDER_NAME Then
+            Set FindReplyList = f
+            Exit Function
+        End If
+    Next f
+End Function
+
+' 받은 편지함(하위 폴더 포함)에서 [내 메일 회신] 범주가 붙은 메일만 모아 보는 검색 폴더
+Private Sub EnsureReplyList()
+    Dim inbox As Object, sch As Object, sf As Object, flt As String
+    On Error GoTo Done
+    If Not FindReplyList() Is Nothing Then Exit Sub
+    Set inbox = Application.Session.GetDefaultFolder(olFolderInbox)
+    flt = """urn:schemas-microsoft-com:office:office#Keywords"" = '" & Replace(CATEGORY_NAME, "'", "''") & "'"
+    Set sch = Application.AdvancedSearch("'" & inbox.FolderPath & "'", flt, True, LIST_FOLDER_NAME)
+    Set sf = sch.Save(LIST_FOLDER_NAME)
+    AddToFavorites sf      ' 처음 만들 때만 즐겨찾기에 추가 (지워도 다시 추가하지 않음)
+Done:
+End Sub
+
+Private Sub AddToFavorites(ByVal fld As Object)
+    Dim grp As Object, nf As Object
+    On Error GoTo Done
+    If fld Is Nothing Then Exit Sub
+    If Application.ActiveExplorer Is Nothing Then Exit Sub
+    Set grp = Application.ActiveExplorer.NavigationPane.Modules _
+                .GetNavigationModule(olModuleMail).NavigationGroups _
+                .GetDefaultNavigationGroup(olFavoriteFoldersGroup)
+    For Each nf In grp.NavigationFolders
+        If nf.Folder.EntryID = fld.EntryID Then Exit Sub
+    Next nf
+    grp.NavigationFolders.Add fld
+Done:
+End Sub
+
+
+'==========================================================================
+'  알림 클릭 처리기
+'  - replyalert: 주소를 현재 사용자 레지스트리(HKCU)에 등록 (관리자 권한 불필요)
+'  - 클릭하면 %APPDATA%\ReplyAlert\open.vbs 가 실행되어 Outlook 에서 메일/목록을 엶
+'==========================================================================
+Private Sub InstallClickHandler()
+    Dim fso As Object, ts As Object, sh As Object
+    Dim folderPath As String, scriptPath As String, regKey As String
+    On Error GoTo Done
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    folderPath = Environ$("APPDATA") & "\ReplyAlert"
+    If Not fso.FolderExists(folderPath) Then fso.CreateFolder folderPath
+    scriptPath = folderPath & "\open.vbs"
+
+    Set ts = fso.CreateTextFile(scriptPath, True, True)   ' 유니코드로 저장 (한글 폴더 이름 보존)
+    ts.Write HandlerScript()
+    ts.Close
+
+    regKey = "HKCU\Software\Classes\" & URI_SCHEME & "\"
+    Set sh = CreateObject("WScript.Shell")
+    sh.RegWrite regKey, "URL:ReplyAlert Protocol", "REG_SZ"
+    sh.RegWrite regKey & "URL Protocol", "", "REG_SZ"
+    sh.RegWrite regKey & "shell\open\command\", _
+                "wscript.exe //B //Nologo """ & scriptPath & """ ""%1""", "REG_SZ"
+    m_HandlerReady = True
+Done:
+End Sub
+
+' open.vbs 내용 (~ 는 큰따옴표로 바뀜)
+Private Function HandlerScript() As String
+    Dim s As String
+    s = "' ReplyAlert 알림 클릭 처리기 - Outlook 매크로 ReplyAlert 가 자동 생성" & vbCrLf & _
+        "On Error Resume Next" & vbCrLf & _
+        "Dim uri, arg, ol, ns, itm, f, ex, sh, re, found" & vbCrLf & _
+        "If WScript.Arguments.Count = 0 Then WScript.Quit" & vbCrLf & _
+        "uri = WScript.Arguments(0)" & vbCrLf & _
+        "If LCase(Left(uri, <<LEN>>)) = ~<<SCHEME>>:~ Then uri = Mid(uri, <<LEN>> + 1)" & vbCrLf & _
+        "Do While Len(uri) > 0 And Right(uri, 1) = ~/~" & vbCrLf & _
+        "  uri = Left(uri, Len(uri) - 1)" & vbCrLf & _
+        "Loop" & vbCrLf & _
+        "Set sh = CreateObject(~WScript.Shell~)" & vbCrLf & _
+        "Set ol = GetObject(, ~Outlook.Application~)" & vbCrLf & _
+        "If Not IsObject(ol) Then Set ol = CreateObject(~Outlook.Application~)" & vbCrLf & _
+        "If Not IsObject(ol) Then WScript.Quit" & vbCrLf & _
+        "Set ns = ol.GetNamespace(~MAPI~)" & vbCrLf & _
+        "found = False" & vbCrLf
+    s = s & _
+        "If LCase(Left(uri, 5)) = ~open/~ Then" & vbCrLf & _
+        "  arg = Mid(uri, 6)" & vbCrLf & _
+        "  Set re = New RegExp" & vbCrLf & _
+        "  re.Pattern = ~^[0-9A-Fa-f]+$~" & vbCrLf & _
+        "  If re.Test(arg) Then" & vbCrLf & _
+        "    Set itm = ns.GetItemFromID(arg)" & vbCrLf & _
+        "    If IsObject(itm) Then" & vbCrLf & _
+        "      itm.Display" & vbCrLf & _
+        "      sh.AppActivate itm.GetInspector.Caption" & vbCrLf & _
+        "      found = True" & vbCrLf & _
+        "    End If" & vbCrLf & _
+        "  End If" & vbCrLf & _
+        "End If" & vbCrLf
+    s = s & _
+        "' 메일을 못 찾았거나(다른 폴더로 옮김 등) 목록 버튼이면 회신 목록 열기" & vbCrLf & _
+        "If Not found Then" & vbCrLf & _
+        "  For Each f In ns.GetDefaultFolder(6).Store.GetSearchFolders" & vbCrLf & _
+        "    If f.Name = ~<<LIST>>~ Then" & vbCrLf & _
+        "      Set ex = ol.ActiveExplorer" & vbCrLf & _
+        "      If ex Is Nothing Then" & vbCrLf & _
+        "        f.Display" & vbCrLf & _
+        "      Else" & vbCrLf & _
+        "        Set ex.CurrentFolder = f" & vbCrLf & _
+        "        ex.Activate" & vbCrLf & _
+        "      End If" & vbCrLf & _
+        "      sh.AppActivate ol.ActiveExplorer.Caption" & vbCrLf & _
+        "      Exit For" & vbCrLf & _
+        "    End If" & vbCrLf & _
+        "  Next" & vbCrLf & _
+        "End If" & vbCrLf
+    s = Replace(s, "<<SCHEME>>", URI_SCHEME)
+    s = Replace(s, "<<LEN>>", CStr(Len(URI_SCHEME) + 1))
+    s = Replace(s, "<<LIST>>", Replace(LIST_FOLDER_NAME, "~", ""))
+    HandlerScript = Replace(s, "~", Chr$(34))
+End Function
 
 
 '==========================================================================
