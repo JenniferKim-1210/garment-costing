@@ -1,7 +1,14 @@
+Private WithEvents SentItems As Outlook.Items
+
 Private Sub Application_Startup()
+    Set SentItems = Application.Session.GetDefaultFolder(olFolderSentMail).Items
     ReplyAlert.OnStartup
 End Sub
 
 Private Sub Application_NewMailEx(ByVal EntryIDCollection As String)
     ReplyAlert.OnNewMail EntryIDCollection
+End Sub
+
+Private Sub SentItems_ItemAdd(ByVal Item As Object)
+    ReplyAlert.OnItemSent Item
 End Sub
