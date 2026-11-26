@@ -1,0 +1,7 @@
+Private Sub Application_Startup()
+    ReplyAlert.OnStartup
+End Sub
+
+Private Sub Application_NewMailEx(ByVal EntryIDCollection As String)
+    ReplyAlert.OnNewMail EntryIDCollection
+End Sub
