@@ -28,7 +28,7 @@ Attribute VB_Name = "ReplyAlert"
 '
 '  Macros (Alt+F8): MarkDone, ShowReplyList, ShowAttentionList, ShowMyTodoList,
 '    ShowNoReplyList, CheckMyTodo, CheckNoReply, ScanRecentInbox, RecheckReplyMarks, TestSelectedMail,
-'    TestToast, EditMyNames, FixBrokenCategories, ReplyReport
+'    TestToast, EditMyNames, FixBrokenCategories, ReplyReport, EditPeople, TagPeopleNow
 '==========================================================================
 Option Explicit
 
@@ -172,6 +172,9 @@ Private m_SubFolders As Collection ' 받은 편지함 하위 폴더 (규칙으�
 Private m_SubSweepIdx As Long
 Private m_LastSubSweep As Date
 Private m_SweepReplies As Long
+Private m_PeopleLabel() As String  ' 사람별 목록 이름 (예: 해리 과장)
+Private m_PeopleKw() As String     ' 사람별 찾을 단어 ("|" 로 구분, 소문자)
+Private m_PeopleCount As Long
 
 
 '==========================================================================
@@ -188,6 +191,7 @@ Public Sub OnStartup()
         If ATTENTION_ENABLED Then EnsureSearchFolder ATTENTION_LIST_NAME, olFolderInbox, ATTENTION_CATEGORY, olCategoryColorPurple
         If TODO_ENABLED Then EnsureSearchFolder TODO_LIST_NAME, olFolderInbox, TODO_CATEGORY, olCategoryColorBlue
         If FOLLOWUP_ENABLED Then EnsureSearchFolder FOLLOWUP_LIST_NAME, olFolderSentMail, FOLLOWUP_CATEGORY, olCategoryColorOrange
+        EnsurePeopleFolders
     End If
     ' 무거운 검사는 여기서 하지 않음 (시작 후 STARTUP_DELAY_SECONDS 뒤, 새 메일이 올 때 조금씩)
 End Sub
@@ -223,6 +227,7 @@ Public Sub OnItemSent(ByVal sentItem As Object)
         End If
         NoteMine SafeConvId(sentItem), t, eid
     End If
+    TagPeople sentItem     ' 사람별 목록
     m_TodoDirty = True     ' 내가 답했으니 [내 답장 필요] 등 정리
     m_FuDirty = True
     RunScheduledChecks
@@ -588,6 +593,7 @@ Private Function ProcessPendingNew() As Boolean
         Set itm = GetItemSafe(eid)
         If Not itm Is Nothing Then
             UpdateMapsWithItem itm
+            TagPeople itm
             marked = ProcessMail(itm, Not m_PendingSummary, attn)
             If marked And m_PendingSummary Then m_SumReplies = m_SumReplies + 1
         End If
@@ -2051,6 +2057,7 @@ Private Sub EnsureInit()
     ATTENTION_GREETINGS = "hi;hello;hey;dear;good morning;good afternoon;good evening;morning;greetings;attn;attention;to;" & _
                           "안녕하세요;안녕하십니까;수신;받는 사람;존경하는"
     ATTENTION_NAMES = LoadNames()
+    LoadPeople
     If ATTENTION_AUTO_NAMES Then ATTENTION_NAMES = ATTENTION_NAMES & ";" & AutoNames()
     m_Inited = True
 End Sub
@@ -2144,6 +2151,189 @@ End Function
 '    - 받은 편지함(하위 폴더 포함) + 지운 편지함에서 회신을 찾음
 '    - 제목을 클릭하면 Outlook 에서 그 메일이 열림 (알림 클릭 처리기 사용)
 ' ==========================================================================
+' ==========================================================================
+'  사람별 목록 : people.txt 에 적은 사람이 보내거나 받는 사람/참조에 들어간 메일을 모아 봄
+'    파일 형식 (한 줄에 한 사람):  목록 이름 = 찾을 단어; 찾을 단어; ...
+'    찾을 단어는 보낸 사람 이름/주소, 받는 사람, 참조에 들어 있는 글자 (대소문자 무시)
+' ==========================================================================
+Private Function PeopleFilePath() As String
+    PeopleFilePath = Environ$("APPDATA") & "\ReplyAlert\people.txt"
+End Function
+
+Private Sub LoadPeople()
+    Dim txt As String, defaults As String, lines() As String, i As Long, ln As String, p As Long
+    Dim lbl As String, kws() As String, j As Long, kw As String, joined As String
+    On Error Resume Next
+    defaults = "# 한 줄에 한 사람:  목록 이름 = 찾을 단어; 찾을 단어; ..." & vbCrLf & _
+               "# 찾을 단어는 Outlook 에 보이는 이름이나 메일 주소 일부 (대소문자 무시)" & vbCrLf & _
+               "해리 과장 = Hae Ri; Hailey" & vbCrLf & _
+               "성진 대리 = Sung Jin; Seong Jin; Sungjin; Seongjin; 성진" & vbCrLf
+    txt = ReadUtf8(PeopleFilePath())
+    If Len(Trim$(Replace(Replace(txt, vbCr, ""), vbLf, ""))) = 0 Then
+        WriteUtf8 PeopleFilePath(), defaults
+        txt = defaults
+    End If
+    m_PeopleCount = 0
+    ReDim m_PeopleLabel(1 To 50)
+    ReDim m_PeopleKw(1 To 50)
+    lines = Split(Replace(txt, vbCr, ""), vbLf)
+    For i = LBound(lines) To UBound(lines)
+        ln = Trim$(Replace(lines(i), ChrW(65279), ""))
+        p = InStr(1, ln, "=")
+        If Len(ln) > 0 And Left$(ln, 1) <> "#" And p > 1 And m_PeopleCount < 50 Then
+            lbl = Trim$(Left$(ln, p - 1))
+            kws = Split(Mid$(ln, p + 1), ";")
+            joined = ""
+            For j = LBound(kws) To UBound(kws)
+                kw = LCase$(Trim$(kws(j)))
+                If Len(kw) > 1 Then joined = joined & "|" & kw
+            Next j
+            If Len(lbl) > 0 And Len(joined) > 0 Then
+                m_PeopleCount = m_PeopleCount + 1
+                m_PeopleLabel(m_PeopleCount) = lbl
+                m_PeopleKw(m_PeopleCount) = joined & "|"
+            End If
+        End If
+    Next i
+End Sub
+
+' 사람 목록 파일을 메모장으로 열기 (저장 후 TagPeopleNow 실행 또는 Outlook 재시작)
+Public Sub EditPeople()
+    EnsureInit
+    Shell "notepad.exe """ & PeopleFilePath() & """", vbNormalFocus
+End Sub
+
+Private Function PersonHit(ByVal hay As String, ByVal idx As Long) As Boolean
+    Dim kws() As String, j As Long
+    kws = Split(m_PeopleKw(idx), "|")
+    For j = LBound(kws) To UBound(kws)
+        If Len(kws(j)) > 0 Then
+            If InStr(1, hay, kws(j), vbBinaryCompare) > 0 Then
+                PersonHit = True
+                Exit Function
+            End If
+        End If
+    Next j
+End Function
+
+' 메일 한 통에 사람별 범주 붙이기
+Private Sub TagPeople(ByVal itm As Object)
+    Dim hay As String, i As Long
+    On Error Resume Next
+    If m_PeopleCount = 0 Then Exit Sub
+    If itm.Class <> olMail Then Exit Sub
+    hay = LCase$(itm.SenderName & "|" & GetSenderSmtp(itm) & "|" & itm.To & "|" & itm.CC)
+    For i = 1 To m_PeopleCount
+        If PersonHit(hay, i) Then
+            EnsureCategory m_PeopleLabel(i), olCategoryColorGreen
+            AddCategoryName itm, m_PeopleLabel(i)
+        End If
+    Next i
+End Sub
+
+' 사람별 검색 폴더 (받은 편지함 + 보낸 편지함, 하위 폴더 포함)
+Private Sub EnsurePeopleFolders()
+    Dim i As Long, scope As String, sch As Object, sf As Object, flt As String
+    On Error Resume Next
+    If m_PeopleCount = 0 Then Exit Sub
+    scope = "'" & Application.Session.GetDefaultFolder(olFolderInbox).FolderPath & "','" & _
+            Application.Session.GetDefaultFolder(olFolderSentMail).FolderPath & "'"
+    For i = 1 To m_PeopleCount
+        If FindSearchFolder(m_PeopleLabel(i)) Is Nothing Then
+            EnsureCategory m_PeopleLabel(i), olCategoryColorGreen
+            flt = """urn:schemas-microsoft-com:office:office#Keywords"" = '" & Replace(m_PeopleLabel(i), "'", "''") & "'"
+            Set sch = Nothing
+            Set sch = Application.AdvancedSearch(scope, flt, True, m_PeopleLabel(i))
+            Set sf = Nothing
+            Set sf = sch.Save(m_PeopleLabel(i))
+            AddToFavorites sf
+        End If
+    Next i
+End Sub
+
+' 지난 메일에 사람별 범주 붙이기 (받은 편지함 + 하위 폴더 + 보낸 편지함)
+Public Sub TagPeopleNow()
+    Dim v As String, days As Long, folders As New Collection, fld As Object, inbox As Object, n As Long, i As Long, msg As String
+    EnsureInit
+    LoadPeople
+    If m_PeopleCount = 0 Then
+        MsgBoxU "사람 목록이 비어 있습니다. EditPeople 로 people.txt 를 먼저 적어 주세요.", vbExclamation
+        Exit Sub
+    End If
+    v = InputBox("How many days back should I check (Inbox + Sent Items)?" & vbCrLf & "(e.g. 30, 60, 90)", "ReplyAlert", "60")
+    If Len(Trim$(v)) = 0 Then Exit Sub
+    If Not IsNumeric(v) Then Exit Sub
+    days = CLng(v)
+    If days < 1 Then Exit Sub
+    If m_Busy Then
+        MsgBoxU "지금 다른 검사를 하는 중입니다. 잠시 후 다시 실행하세요.", vbInformation
+        Exit Sub
+    End If
+    m_Busy = True
+    EnsurePeopleFolders
+    Set inbox = Application.Session.GetDefaultFolder(olFolderInbox)
+    folders.Add inbox
+    AddSubFolders inbox, folders, 0
+    folders.Add Application.Session.GetDefaultFolder(olFolderSentMail)
+    For Each fld In folders
+        n = n + TagPeopleFolder(fld, Now - days)
+    Next fld
+    m_Busy = False
+    msg = "최근 " & days & "일 메일에서 " & n & "건에 사람별 표시를 붙였습니다." & vbCrLf & vbCrLf & "목록:"
+    For i = 1 To m_PeopleCount
+        msg = msg & vbCrLf & "  - " & m_PeopleLabel(i)
+    Next i
+    msg = msg & vbCrLf & vbCrLf & "(즐겨찾기 또는 폴더 목록 > 검색 폴더 에서 보세요)"
+    MsgBoxU msg, vbInformation
+End Sub
+
+Private Function TagPeopleFolder(ByVal fld As Object, ByVal cutoff As Date) As Long
+    Dim tbl As Object, arr As Variant, r As Long, t As Date, hay As String, cats As String, i As Long, itm As Object, n As Long
+    Dim C_EID As Long, C_CLASS As Long, C_RCV As Long, C_NAME As Long, C_SND As Long, C_TO As Long, C_CC As Long, C_CATS As Long
+    On Error GoTo Done
+    Set tbl = fld.GetTable
+    tbl.Columns.RemoveAll
+    C_EID = AddCol(tbl, "EntryID")
+    C_CLASS = AddCol(tbl, "MessageClass")
+    C_RCV = AddCol(tbl, "ReceivedTime")
+    C_NAME = AddCol(tbl, "SenderName")
+    C_SND = AddCol(tbl, PR_SENDER_SMTP_ADDRESS)
+    C_TO = AddCol(tbl, PR_DISPLAY_TO)
+    C_CC = AddCol(tbl, PR_DISPLAY_CC)
+    C_CATS = AddCol(tbl, "Categories")
+    If C_EID < 0 Or C_RCV < 0 Then GoTo Done
+    tbl.Sort "[ReceivedTime]", True
+    Do Until tbl.EndOfTable
+        arr = tbl.GetArray(TABLE_CHUNK)
+        If Not IsArray(arr) Then Exit Do
+        For r = LBound(arr, 1) To UBound(arr, 1)
+            t = VDate(AV(arr, r, C_RCV))
+            If t <> 0 And t < cutoff Then GoTo Done
+            If Left$(RowClass(arr, r, C_CLASS), 8) = "ipm.note" Then
+                hay = LCase$(VStr(AV(arr, r, C_NAME)) & "|" & VStr(AV(arr, r, C_SND)) & "|" & _
+                             VStr(AV(arr, r, C_TO)) & "|" & VStr(AV(arr, r, C_CC)))
+                cats = VStr(AV(arr, r, C_CATS))
+                Set itm = Nothing
+                For i = 1 To m_PeopleCount
+                    If Not CatListHas(cats, m_PeopleLabel(i)) Then
+                        If PersonHit(hay, i) Then
+                            If itm Is Nothing Then Set itm = GetItemSafe(VStr(AV(arr, r, C_EID)))
+                            If Not itm Is Nothing Then
+                                EnsureCategory m_PeopleLabel(i), olCategoryColorGreen
+                                AddCategoryName itm, m_PeopleLabel(i)
+                                n = n + 1
+                            End If
+                        End If
+                    End If
+                Next i
+            End If
+        Next r
+        DoEvents
+    Loop
+Done:
+    TagPeopleFolder = n
+End Function
+
 Public Sub ReplyReport()
     Dim v As String, days As Long, cutoff As Date
     Dim convs As Object, myLast As Object, myLastId As Object, myFirst As Object, mySubj As Object, myTo As Object
