@@ -62,7 +62,10 @@ def build(src, dst):
             raise SystemExit("%s line %d is too long for the VBA editor" % (src.name, n))
         out.append(new_line)
     dst.write_bytes(("\r\n".join(out) + "\r\n").encode("ascii"))
-    print("wrote", dst.name, len(out), "lines")
+    # paste-ready copy (no Attribute line) for PCs where File > Import does not work
+    paste = dst.with_name(dst.stem + "_paste.txt")
+    paste.write_bytes(("\r\n".join(l for l in out if not l.startswith("Attribute VB_Name")) + "\r\n").encode("ascii"))
+    print("wrote", dst.name, "and", paste.name, len(out), "lines")
 
 
 def main():
