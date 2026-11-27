@@ -117,6 +117,7 @@ Private Const PR_FLAG_STATUS As String = "http://schemas.microsoft.com/mapi/prop
 Private Const PR_DISPLAY_TO As String = "http://schemas.microsoft.com/mapi/proptag/0x0E04001F"
 Private Const PR_DISPLAY_CC As String = "http://schemas.microsoft.com/mapi/proptag/0x0E03001F"
 Private Const PR_CONVERSATION_ID As String = "http://schemas.microsoft.com/mapi/proptag/0x30130102"
+Private Const PR_CONVERSATION_TOPIC As String = "http://schemas.microsoft.com/mapi/proptag/0x0070001F"
 
 Private Const VERB_REPLY As Long = 102
 Private Const VERB_REPLY_ALL As Long = 103
@@ -175,6 +176,8 @@ Private m_SweepReplies As Long
 Private m_PeopleLabel() As String
 Private m_PeopleKw() As String
 Private m_PeopleCount As Long
+Private m_PeopleSet() As Object    ' : ("c:ID", "t:")
+Private m_PeopleSetsReady As Boolean
 
 
 '==========================================================================
@@ -2130,6 +2133,7 @@ Private Sub LoadPeople()
         txt = defaults
     End If
     m_PeopleCount = 0
+    m_PeopleSetsReady = False
     ReDim m_PeopleLabel(1 To 50)
     ReDim m_PeopleKw(1 To 50)
     lines = Split(Replace(txt, vbCr, ""), vbLf)
@@ -2172,14 +2176,115 @@ Private Function PersonHit(ByVal hay As String, ByVal idx As Long) As Boolean
     Next j
 End Function
 
+' , (To) ( ID RE:/FW: )
+' -> ((CC) )
+Private Sub AddThread(ByVal idx As Long, ByVal conv As String, ByVal topic As String)
+    If Len(conv) > 0 Then m_PeopleSet(idx)("c:" & conv) = True
+    If Len(topic) >= 4 Then m_PeopleSet(idx)("t:" & topic) = True
+End Sub
+
+Private Function InThread(ByVal idx As Long, ByVal conv As String, ByVal topic As String) As Boolean
+    If Len(conv) > 0 Then
+        If m_PeopleSet(idx).Exists("c:" & conv) Then InThread = True: Exit Function
+    End If
+    If Len(topic) >= 4 Then InThread = m_PeopleSet(idx).Exists("t:" & topic)
+End Function
+
+' : RE:/FW:/:/:/[External]
+Private Function NormTopic(ByVal s As String) As String
+    Dim changed As Boolean, prefixes() As String, i As Long, pf As String
+    s = LCase$(Trim$(s))
+    prefixes = Split(U("re:|fw:|fwd:|re :|fw :|aw:|wg:|\uD68C\uC2E0:|\uC804\uB2EC:|\uB2F5\uC7A5:|[external]|[ext]|[\uC678\uBD80]"), "|")
+    Do
+        changed = False
+        For i = LBound(prefixes) To UBound(prefixes)
+            pf = prefixes(i)
+            If Left$(s, Len(pf)) = pf Then
+                s = Trim$(Mid$(s, Len(pf) + 1))
+                changed = True
+            End If
+        Next i
+    Loop While changed And Len(s) > 0
+    NormTopic = s
+End Function
+
+' ( ) + . rows
+Private Sub BuildPeopleSets(ByVal days As Long, ByVal rows As Collection)
+    Dim folders As New Collection, fld As Object, inbox As Object, i As Long
+    On Error Resume Next
+    If m_PeopleCount = 0 Then Exit Sub
+    ReDim m_PeopleSet(1 To m_PeopleCount)
+    For i = 1 To m_PeopleCount
+        Set m_PeopleSet(i) = NewDict()
+    Next i
+    Set inbox = Application.Session.GetDefaultFolder(olFolderInbox)
+    folders.Add inbox
+    AddSubFolders inbox, folders, 0
+    folders.Add Application.Session.GetDefaultFolder(olFolderSentMail)
+    For Each fld In folders
+        PeopleScanFolder fld, Now - days, rows
+    Next fld
+    m_PeopleSetsReady = True
+End Sub
+
+Private Sub PeopleScanFolder(ByVal fld As Object, ByVal cutoff As Date, ByVal rows As Collection)
+    Dim tbl As Object, arr As Variant, r As Long, t As Date, sHay As String, tHay As String, conv As String, topic As String, i As Long
+    Dim C_EID As Long, C_CLASS As Long, C_RCV As Long, C_NAME As Long, C_SND As Long, C_TO As Long, C_CATS As Long
+    Dim C_CONV As Long, C_TOPIC As Long, C_SUBJ As Long
+    On Error GoTo Done
+    Set tbl = fld.GetTable
+    tbl.Columns.RemoveAll
+    C_EID = AddCol(tbl, "EntryID")
+    C_CLASS = AddCol(tbl, "MessageClass")
+    C_RCV = AddCol(tbl, "ReceivedTime")
+    C_NAME = AddCol(tbl, "SenderName")
+    C_SND = AddCol(tbl, PR_SENDER_SMTP_ADDRESS)
+    C_TO = AddCol(tbl, PR_DISPLAY_TO)
+    C_CATS = AddCol(tbl, "Categories")
+    C_CONV = AddCol(tbl, PR_CONVERSATION_ID)
+    C_TOPIC = AddCol(tbl, PR_CONVERSATION_TOPIC)
+    C_SUBJ = AddCol(tbl, "Subject")
+    If C_EID < 0 Or C_RCV < 0 Then GoTo Done
+    tbl.Sort "[ReceivedTime]", True
+    Do Until tbl.EndOfTable
+        arr = tbl.GetArray(TABLE_CHUNK)
+        If Not IsArray(arr) Then Exit Do
+        For r = LBound(arr, 1) To UBound(arr, 1)
+            t = VDate(AV(arr, r, C_RCV))
+            If t <> 0 And t < cutoff Then GoTo Done
+            If Left$(RowClass(arr, r, C_CLASS), 8) = "ipm.note" Then
+                sHay = LCase$(VStr(AV(arr, r, C_NAME)) & "|" & VStr(AV(arr, r, C_SND)))
+                tHay = LCase$(VStr(AV(arr, r, C_TO)))
+                conv = VHex(AV(arr, r, C_CONV))
+                topic = VStr(AV(arr, r, C_TOPIC))
+                If Len(topic) = 0 Then topic = VStr(AV(arr, r, C_SUBJ))
+                topic = NormTopic(topic)
+                For i = 1 To m_PeopleCount
+                    If PersonHit(sHay, i) Or PersonHit(tHay, i) Then AddThread i, conv, topic
+                Next i
+                If Not rows Is Nothing Then rows.Add Array(VStr(AV(arr, r, C_EID)), VStr(AV(arr, r, C_CATS)), conv, topic)
+            End If
+        Next r
+        DoEvents
+    Loop
+Done:
+End Sub
+
 Private Sub TagPeople(ByVal itm As Object)
-    Dim hay As String, i As Long
+    Dim sHay As String, tHay As String, conv As String, topic As String, i As Long
     On Error Resume Next
     If m_PeopleCount = 0 Then Exit Sub
     If itm.Class <> olMail Then Exit Sub
-    hay = LCase$(itm.SenderName & "|" & GetSenderSmtp(itm) & "|" & itm.To & "|" & itm.CC)
+    If Not m_PeopleSetsReady Then BuildPeopleSets 60, Nothing      ' Outlook
+    sHay = LCase$(itm.SenderName & "|" & GetSenderSmtp(itm))
+    tHay = LCase$(itm.To)
+    conv = SafeConvId(itm)
+    topic = itm.ConversationTopic
+    If Len(topic) = 0 Then topic = itm.Subject
+    topic = NormTopic(topic)
     For i = 1 To m_PeopleCount
-        If PersonHit(hay, i) Then
+        If PersonHit(sHay, i) Or PersonHit(tHay, i) Then AddThread i, conv, topic
+        If InThread(i, conv, topic) Then
             EnsureCategory m_PeopleLabel(i), olCategoryColorGreen
             AddCategoryName itm, m_PeopleLabel(i)
         End If
@@ -2206,7 +2311,8 @@ Private Sub EnsurePeopleFolders()
 End Sub
 
 Public Sub TagPeopleNow()
-    Dim v As String, days As Long, folders As New Collection, fld As Object, inbox As Object, n As Long, i As Long, msg As String
+    Dim v As String, days As Long, rows As New Collection, rw As Variant, i As Long, msg As String
+    Dim want As Boolean, has As Boolean, itm As Object, nAdd As Long, nDel As Long, cnt() As Long
     EnsureInit
     LoadPeople
     If m_PeopleCount = 0 Then
@@ -2223,69 +2329,42 @@ Public Sub TagPeopleNow()
         Exit Sub
     End If
     m_Busy = True
+    On Error Resume Next
     EnsurePeopleFolders
-    Set inbox = Application.Session.GetDefaultFolder(olFolderInbox)
-    folders.Add inbox
-    AddSubFolders inbox, folders, 0
-    folders.Add Application.Session.GetDefaultFolder(olFolderSentMail)
-    For Each fld In folders
-        n = n + TagPeopleFolder(fld, Now - days)
-    Next fld
+    BuildPeopleSets days, rows
+    ReDim cnt(1 To m_PeopleCount)
+    For Each rw In rows
+        Set itm = Nothing
+        For i = 1 To m_PeopleCount
+            want = InThread(i, CStr(rw(2)), CStr(rw(3)))
+            has = CatListHas(CStr(rw(1)), m_PeopleLabel(i))
+            If want Then cnt(i) = cnt(i) + 1
+            If want <> has Then
+                If itm Is Nothing Then Set itm = GetItemSafe(CStr(rw(0)))
+                If Not itm Is Nothing Then
+                    If want Then
+                        EnsureCategory m_PeopleLabel(i), olCategoryColorGreen
+                        AddCategoryName itm, m_PeopleLabel(i)
+                        nAdd = nAdd + 1
+                    Else
+                        RemoveCategoryName itm, m_PeopleLabel(i), True
+                        nDel = nDel + 1
+                    End If
+                End If
+            End If
+        Next i
+        If (nAdd + nDel) Mod 20 = 1 Then DoEvents
+    Next rw
+    On Error GoTo 0
     m_Busy = False
-    msg = U("\uCD5C\uADFC ") & days & U("\uC77C \uBA54\uC77C\uC5D0\uC11C ") & n & U("\uAC74\uC5D0 \uC0AC\uB78C\uBCC4 \uD45C\uC2DC\uB97C \uBD99\uC600\uC2B5\uB2C8\uB2E4.") & vbCrLf & vbCrLf & U("\uBAA9\uB85D:")
+    msg = U("\uCD5C\uADFC ") & days & U("\uC77C, \uC8FC\uACE0\uBC1B\uC740 \uC2A4\uB808\uB4DC \uAE30\uC900\uC73C\uB85C \uC815\uB9AC\uD588\uC2B5\uB2C8\uB2E4.") & vbCrLf & _
+          U("(\uC0C8\uB85C \uD45C\uC2DC ") & nAdd & U("\uAC74, \uD45C\uC2DC \uD574\uC81C ") & nDel & U("\uAC74)") & vbCrLf
     For i = 1 To m_PeopleCount
-        msg = msg & vbCrLf & "  - " & m_PeopleLabel(i)
+        msg = msg & vbCrLf & "  - " & m_PeopleLabel(i) & ": " & cnt(i) & U("\uAC74")
     Next i
     msg = msg & vbCrLf & vbCrLf & U("(\uC990\uACA8\uCC3E\uAE30 \uB610\uB294 \uD3F4\uB354 \uBAA9\uB85D > \uAC80\uC0C9 \uD3F4\uB354 \uC5D0\uC11C \uBCF4\uC138\uC694)")
     MsgBoxU msg, vbInformation
 End Sub
-
-Private Function TagPeopleFolder(ByVal fld As Object, ByVal cutoff As Date) As Long
-    Dim tbl As Object, arr As Variant, r As Long, t As Date, hay As String, cats As String, i As Long, itm As Object, n As Long
-    Dim C_EID As Long, C_CLASS As Long, C_RCV As Long, C_NAME As Long, C_SND As Long, C_TO As Long, C_CC As Long, C_CATS As Long
-    On Error GoTo Done
-    Set tbl = fld.GetTable
-    tbl.Columns.RemoveAll
-    C_EID = AddCol(tbl, "EntryID")
-    C_CLASS = AddCol(tbl, "MessageClass")
-    C_RCV = AddCol(tbl, "ReceivedTime")
-    C_NAME = AddCol(tbl, "SenderName")
-    C_SND = AddCol(tbl, PR_SENDER_SMTP_ADDRESS)
-    C_TO = AddCol(tbl, PR_DISPLAY_TO)
-    C_CC = AddCol(tbl, PR_DISPLAY_CC)
-    C_CATS = AddCol(tbl, "Categories")
-    If C_EID < 0 Or C_RCV < 0 Then GoTo Done
-    tbl.Sort "[ReceivedTime]", True
-    Do Until tbl.EndOfTable
-        arr = tbl.GetArray(TABLE_CHUNK)
-        If Not IsArray(arr) Then Exit Do
-        For r = LBound(arr, 1) To UBound(arr, 1)
-            t = VDate(AV(arr, r, C_RCV))
-            If t <> 0 And t < cutoff Then GoTo Done
-            If Left$(RowClass(arr, r, C_CLASS), 8) = "ipm.note" Then
-                hay = LCase$(VStr(AV(arr, r, C_NAME)) & "|" & VStr(AV(arr, r, C_SND)) & "|" & _
-                             VStr(AV(arr, r, C_TO)) & "|" & VStr(AV(arr, r, C_CC)))
-                cats = VStr(AV(arr, r, C_CATS))
-                Set itm = Nothing
-                For i = 1 To m_PeopleCount
-                    If Not CatListHas(cats, m_PeopleLabel(i)) Then
-                        If PersonHit(hay, i) Then
-                            If itm Is Nothing Then Set itm = GetItemSafe(VStr(AV(arr, r, C_EID)))
-                            If Not itm Is Nothing Then
-                                EnsureCategory m_PeopleLabel(i), olCategoryColorGreen
-                                AddCategoryName itm, m_PeopleLabel(i)
-                                n = n + 1
-                            End If
-                        End If
-                    End If
-                Next i
-            End If
-        Next r
-        DoEvents
-    Loop
-Done:
-    TagPeopleFolder = n
-End Function
 
 Public Sub ReplyReport()
     Dim v As String, days As Long, cutoff As Date
