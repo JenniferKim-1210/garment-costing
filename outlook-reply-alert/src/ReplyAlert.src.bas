@@ -27,7 +27,7 @@ Attribute VB_Name = "ReplyAlert"
 '    End Sub
 '
 '  Macros (Alt+F8): MarkDone, ShowReplyList, ShowAttentionList, ShowMyTodoList,
-'    ShowNoReplyList, CheckMyTodo, CheckNoReply, ScanRecentInbox, TestSelectedMail,
+'    ShowNoReplyList, CheckMyTodo, CheckNoReply, ScanRecentInbox, RecheckReplyMarks, TestSelectedMail,
 '    TestToast, EditMyNames
 '==========================================================================
 Option Explicit
@@ -439,6 +439,12 @@ Private Sub RunScheduledChecks()
     If GetSetting(SETTINGS_APP, "Cleanup", "Garbled", "") = "" Then
         SaveSetting SETTINGS_APP, "Cleanup", "Garbled", "done"
         CleanupGarbled
+        GoTo Done
+    End If
+    ' 0-2) 예전 규칙으로 잘못 붙은 [내 메일 회신] 표시 다시 확인 (한 번만)
+    If GetSetting(SETTINGS_APP, "Cleanup", "ReplyRecheck1", "") = "" Then
+        SaveSetting SETTINGS_APP, "Cleanup", "ReplyRecheck1", "done"
+        RecheckReplyMarksCore
         GoTo Done
     End If
 
@@ -893,16 +899,89 @@ Private Function FindRepliedMine(ByVal mail As Object) As Object
         End If
     Next i
 
-    ' 2) 답장 정보가 없는 메일: 같은 대화에서 이 메일 전에 내가 보낸 메일이 있으면
+    ' 2) 답장 정보(In-Reply-To)가 없는 메일 (일부 웹메일 등):
+    '    같은 스레드에 내가 먼저 보낸 메일이 있고, 이 메일이 나를 받는 사람(To)으로 했고,
+    '    보낸 사람이 내 메일을 받았던 사람일 때만 회신으로 봄
+    '    (여러 사람이 오가는 스레드에서 남에게 보낸 회신까지 잡히지 않도록)
     If ids.Count = 0 Then
         conv = SafeConvId(mail)
         If Len(conv) > 0 Then
             If m_MyLastTime.Exists(conv) Then
-                If m_MyLastTime(conv) < GetReceived(mail) Then Set FindRepliedMine = GetItemSafe(m_MyLastId(conv))
+                If m_MyLastTime(conv) < GetReceived(mail) Then
+                    If IsToMe(mail) Then
+                        Set f = GetItemSafe(m_MyLastId(conv))
+                        If Not f Is Nothing Then
+                            If WasRecipientOf(f, GetSenderSmtp(mail)) Then Set FindRepliedMine = f
+                        End If
+                    End If
+                End If
             End If
         End If
     End If
 Done:
+End Function
+
+' 내가 보낸 메일 myMail 의 받는 사람(To/CC) 중에 addr 이 있는지
+Private Function WasRecipientOf(ByVal myMail As Object, ByVal addr As String) As Boolean
+    Dim r As Object
+    On Error Resume Next
+    addr = LCase$(Trim$(addr))
+    If Len(addr) = 0 Then Exit Function
+    For Each r In myMail.Recipients
+        If RecipientSmtp(r) = addr Then
+            WasRecipientOf = True
+            Exit Function
+        End If
+    Next r
+End Function
+
+' [내 메일 회신] 표시를 지금 기준으로 다시 확인해서, 아닌 메일은 표시를 뺌
+Public Sub RecheckReplyMarks()
+    Dim n As Long
+    EnsureInit
+    If m_Busy Then
+        MsgBoxU "지금 다른 검사를 하는 중입니다. 잠시 후 다시 실행하세요.", vbInformation, APP_TITLE
+        Exit Sub
+    End If
+    m_Busy = True
+    EnsureMaps True
+    n = RecheckReplyMarksCore()
+    m_Busy = False
+    MsgBoxU "[" & CATEGORY_NAME & "] 표시를 다시 확인해서 " & n & "건을 목록에서 뺐습니다.", vbInformation, APP_TITLE
+End Sub
+
+Private Function RecheckReplyMarksCore() As Long
+    Dim tbl As Object, arr As Variant, r As Long, t As Date, cutoff As Date, itm As Object, n As Long
+    Dim C_EID As Long, C_RCV As Long, C_CATS As Long
+    On Error GoTo Done
+    cutoff = Now - REPLY_TRACK_DAYS
+    Set tbl = Application.Session.GetDefaultFolder(olFolderInbox).GetTable
+    tbl.Columns.RemoveAll
+    C_EID = AddCol(tbl, "EntryID")
+    C_RCV = AddCol(tbl, "ReceivedTime")
+    C_CATS = AddCol(tbl, "Categories")
+    If C_EID < 0 Or C_RCV < 0 Or C_CATS < 0 Then GoTo Done
+    tbl.Sort "[ReceivedTime]", True
+    Do Until tbl.EndOfTable
+        arr = tbl.GetArray(TABLE_CHUNK)
+        If Not IsArray(arr) Then Exit Do
+        For r = LBound(arr, 1) To UBound(arr, 1)
+            t = VDate(AV(arr, r, C_RCV))
+            If t <> 0 And t < cutoff Then GoTo Done
+            If CatListHas(VStr(AV(arr, r, C_CATS)), CATEGORY_NAME) Then
+                Set itm = GetItemSafe(VStr(AV(arr, r, C_EID)))
+                If Not itm Is Nothing Then
+                    If FindRepliedMine(itm) Is Nothing Then
+                        RemoveCategoryName itm, CATEGORY_NAME, True
+                        n = n + 1
+                    End If
+                End If
+            End If
+        Next r
+        DoEvents
+    Loop
+Done:
+    RecheckReplyMarksCore = n
 End Function
 
 Private Function FindSentByMessageId(ByVal msgId As String) As Object
