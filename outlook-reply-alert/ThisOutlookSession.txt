@@ -6,6 +6,7 @@ Private Sub Application_Startup()
 End Sub
 
 Private Sub Application_NewMailEx(ByVal EntryIDCollection As String)
+    DupRemover.CheckNewMail EntryIDCollection   ' remove duplicate copies first
     ReplyAlert.OnNewMail EntryIDCollection
 End Sub
 

@@ -1,4 +1,4 @@
-"""Build ReplyAlert.bas (ASCII only, CRLF) from src/ReplyAlert.src.bas (UTF-8).
+"""Build <Module>.bas (ASCII only, CRLF) from every src/<Module>.src.bas (UTF-8).
 
 The VBA editor reads .bas files in the PC's legacy code page, so Korean text in the
 file breaks on PCs whose "language for non-Unicode programs" is not Korean.
@@ -11,8 +11,6 @@ import pathlib
 import re
 
 HERE = pathlib.Path(__file__).parent
-SRC = HERE / "src" / "ReplyAlert.src.bas"
-OUT = HERE / "ReplyAlert.bas"
 
 
 def split_comment(line):
@@ -48,23 +46,28 @@ def convert_comment(comment):
     return kept if re.search(r"[A-Za-z0-9]", kept[1:]) else ""
 
 
-def main():
+def build(src, dst):
     out = []
-    for n, line in enumerate(SRC.read_text(encoding="utf-8").splitlines(), 1):
+    for n, line in enumerate(src.read_text(encoding="utf-8").splitlines(), 1):
         code, comment = split_comment(line)
         new_code = convert_code(code)
         if new_code != code and re.match(r"\s*(Public |Private )?Const\b", code):
-            raise SystemExit("line %d: Korean text in a Const (use a variable set in EnsureInit)" % n)
+            raise SystemExit("%s line %d: Korean text in a Const (use a variable)" % (src.name, n))
         new_comment = convert_comment(comment)
         if comment and not new_comment and not code.strip():
             continue  # comment-only line that was entirely Korean
         new_line = (new_code + new_comment).rstrip() if new_comment else new_code.rstrip()
         assert all(ord(c) < 128 for c in new_line), (n, new_line)
         if len(new_line) > 1000:
-            raise SystemExit("line %d is too long for the VBA editor" % n)
+            raise SystemExit("%s line %d is too long for the VBA editor" % (src.name, n))
         out.append(new_line)
-    OUT.write_bytes(("\r\n".join(out) + "\r\n").encode("ascii"))
-    print("wrote", OUT, len(out), "lines")
+    dst.write_bytes(("\r\n".join(out) + "\r\n").encode("ascii"))
+    print("wrote", dst.name, len(out), "lines")
+
+
+def main():
+    for src in sorted((HERE / "src").glob("*.src.bas")):
+        build(src, HERE / (src.name[: -len(".src.bas")] + ".bas"))
 
 
 if __name__ == "__main__":

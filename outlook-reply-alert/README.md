@@ -31,7 +31,8 @@
 | 파일 | 설명 |
 |---|---|
 | `ReplyAlert.bas` | 매크로 본문 (VBA 편집기에서 **가져오기** 할 파일) |
-| `ThisOutlookSession.txt` | `ThisOutlookSession` 에 붙여넣을 코드 |
+| `DupRemover.bas` | (별도) 같은 메일이 두 번 들어오면 하나만 남기는 매크로 |
+| `ThisOutlookSession.txt` | `ThisOutlookSession` 에 붙여넣을 코드 (두 매크로 모두 연결) |
 | `src/ReplyAlert.src.bas` | 사람이 읽기 위한 원본 (한글 주석 포함). 직접 가져오지 마세요 |
 | `build.py` | 원본에서 `ReplyAlert.bas` 를 만드는 스크립트 (`python build.py`) |
 
@@ -66,6 +67,7 @@ Outlook → **파일 > 옵션 > 보안 센터 > 보안 센터 설정 > 매크로
    End Sub
 
    Private Sub Application_NewMailEx(ByVal EntryIDCollection As String)
+       DupRemover.CheckNewMail EntryIDCollection   ' remove duplicate copies first
        ReplyAlert.OnNewMail EntryIDCollection
    End Sub
 
@@ -327,6 +329,32 @@ Outlook 기본 기능인 **플래그 > 완료로 표시** 를 해도 `내 답장
 
 **Alt + F8 목록에 매크로가 안 보여요**
 - VBA 편집기(Alt + F11)에서 `ReplyAlert` 모듈을 열고, 실행할 `Sub 이름()` 줄 안을 한 번 클릭한 뒤 **F5** 를 누르면 실행됩니다.
+
+---
+
+## 중복 메일 정리 (`DupRemover`, 별도 매크로)
+
+`loungepm@`, `sleeppm@` 처럼 내가 여러 그룹 주소에 들어 있어서 **같은 메일이 2통씩** 들어올 때,
+**먼저 온 1통만 남기고 나중 것은 지운 편지함으로** 옮깁니다. (지운 편지함에서 되살릴 수 있습니다)
+
+- 같은 메일 판단: 메일 고유 번호(Message-ID)가 같거나, 없으면 보낸 사람 + 제목 + 보낸 시각(초 단위)이 같음
+- 두 통이 **30분 안에** 들어온 경우만 지웁니다 (`DUP_WINDOW_MINUTES`)
+- 먼저 온 메일을 내가 이미 지웠으면 나중 것은 남깁니다
+
+**설치**
+1. Alt + F11 → **파일 > 파일 가져오기** → `DupRemover.bas`
+2. `ThisOutlookSession` 의 `Application_NewMailEx` 에 `DupRemover.CheckNewMail EntryIDCollection` 줄 추가 (`ThisOutlookSession.txt` 참고, `ReplyAlert` 줄보다 위에)
+3. 저장 → Outlook 재시작
+
+**매크로 (Alt + F8)**
+
+| 매크로 | 기능 |
+|---|---|
+| `RemoveDuplicatesNow` | 받은 편지함에 이미 들어와 있는 중복 메일 정리 (며칠 전까지 볼지 물어보고, 지우기 전에 확인) |
+| `TestDuplicate` | 선택한 메일이 중복으로 판단되는지 확인 |
+
+> 그룹이 메일 제목에 `[loungepm]` 같은 꼬리표를 붙이거나 메일을 새로 만들어 전달하면 두 통이 "다른 메일"로 보일 수 있습니다.
+> 지워지지 않는 중복이 있으면 두 메일 각각 `TestDuplicate` 결과를 알려 주세요.
 
 ---
 
