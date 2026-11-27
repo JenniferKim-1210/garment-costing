@@ -30,8 +30,14 @@
 
 | 파일 | 설명 |
 |---|---|
-| `ReplyAlert.bas` | 매크로 본문 (VBA 편집기에서 **가져오기** 할 파일, 한글 Windows 인코딩) |
+| `ReplyAlert.bas` | 매크로 본문 (VBA 편집기에서 **가져오기** 할 파일) |
 | `ThisOutlookSession.txt` | `ThisOutlookSession` 에 붙여넣을 코드 |
+| `src/ReplyAlert.src.bas` | 사람이 읽기 위한 원본 (한글 주석 포함). 직접 가져오지 마세요 |
+| `build.py` | 원본에서 `ReplyAlert.bas` 를 만드는 스크립트 (`python build.py`) |
+
+> `ReplyAlert.bas` 에는 한글이 없고 영어/숫자만 들어 있습니다. 한글은 실행할 때 만들어지므로
+> **Windows 언어 설정과 관계없이** 범주, 목록, 알림, 메시지 창에 한글이 제대로 나옵니다.
+> 그래서 VBA 편집기 안의 설정 설명은 영어로 되어 있습니다.
 
 ---
 
@@ -108,8 +114,10 @@ Outlook → **파일 > 옵션 > 보안 센터 > 보안 센터 설정 > 매크로
 | 김나현 차장님, / 김 나현 차장님 안녕하세요 | 박 과장님, ↵ 김나현 차장님께서 요청하신 건… |
 | 안녕하세요 김나현 차장님, / 수신: 김나현 차장님 / 김나현 차장님께, | 김나현 님이 문서를 공유했습니다 |
 
-- 이름은 설정 `ATTENTION_NAMES` 에 있습니다. 기본값: `"Jennifer;김나현;김 나현"`
-  - 다른 호칭으로도 자주 받으면 추가하세요. 예: `"Jennifer;Jenny;Ms. Kim;김나현;김 나현;김 차장"`
+- 이름 목록은 **메모장으로 고칩니다.** `Alt + F8` → `EditMyNames` 실행 → 메모장이 열리면 한 줄에 하나씩 적고 저장 → Outlook 재시작
+  - 기본값: `Jennifer`, `김나현`, `김 나현`
+  - 다른 호칭으로도 자주 받으면 추가하세요. 예: `Jenny`, `Ms. Kim`, `김 차장`
+  - 파일 위치: `%APPDATA%\ReplyAlert\names.txt`
 - 이 메일들은 **참조(CC)나 단체 메일이어도 `내 답장 필요` 에 들어갑니다.** (나를 불렀으니 답해야 할 가능성이 높음)
 - 뉴스레터처럼 자동 발송된 메일은 "Dear Jennifer" 로 시작해도 제외합니다.
 - 내가 회신하면 목록에서 빠집니다. 도착할 때 알림도 받으려면 `ATTENTION_TOAST = True`
@@ -174,6 +182,7 @@ Outlook 기본 기능인 **플래그 > 완료로 표시** 를 해도 `내 답장
 | `ScanRecentInbox` | 최근 14일 받은 메일에서 내 메일 회신 / 내 앞으로 온 메일 다시 찾기 |
 | `TestSelectedMail` | 선택한 메일이 왜 목록에 들어갔는지/안 들어갔는지 진단 |
 | `TestToast` | 알림 테스트 (메일을 선택하고 실행하면 클릭 시 그 메일이 열림) |
+| `EditMyNames` | 나를 부르는 이름 목록을 메모장으로 열기 |
 
 ---
 
@@ -194,7 +203,8 @@ Outlook 기본 기능인 **플래그 > 완료로 표시** 를 해도 `내 답장
 | 설정 | 기본값 | 설명 |
 |---|---|---|
 | `ATTENTION_ENABLED` | `True` | 기능 사용 |
-| `ATTENTION_NAMES` | `"Jennifer;김나현;김 나현"` | 나를 부르는 이름 (세미콜론으로 구분, 대소문자 무시) |
+| (이름 목록) | `Jennifer`, `김나현`, `김 나현` | `EditMyNames` 매크로로 메모장에서 수정 (한 줄에 하나) |
+| `ATTENTION_EXTRA_NAMES` | `""` | 영문 이름을 설정에서 바로 추가할 때 (예: `"Jenny;Ms. Kim"`) |
 | `ATTENTION_LINES` | `5` | 본문 앞에서 몇 줄까지 볼지 |
 | `ATTENTION_TOAST` | `False` | `True` 면 도착 시 Windows 알림 |
 | `CLEAR_ATTENTION_WHEN_I_REPLY` | `True` | 내가 회신하면 목록에서 빠짐 |
@@ -239,7 +249,7 @@ Outlook 기본 기능인 **플래그 > 완료로 표시** 를 해도 `내 답장
 | `SLICE_SECONDS` | `1.5` | 한 번에 검사하는 최대 시간(초). 나머지는 다음 메일이 올 때 이어서 |
 | `REPLY_TRACK_DAYS` | `60` | 최근 며칠 동안 보낸 메일에 대한 회신을 알릴지 |
 
-범주/목록 이름은 `CATEGORY_NAME`, `TODO_CATEGORY`, `FOLLOWUP_CATEGORY` 등에서 바꿀 수 있습니다.
+범주/목록 이름(한글)을 바꾸려면 `src/ReplyAlert.src.bas` 의 `EnsureInit` 을 고친 뒤 `python build.py` 로 다시 만드세요.
 
 ---
 
@@ -302,8 +312,13 @@ Outlook 기본 기능인 **플래그 > 완료로 표시** 를 해도 `내 답장
   2. VBA 편집기 **도구 > 디지털 서명 > 선택** → 만든 인증서 선택 → 저장 후 재시작
   3. 처음 뜨는 경고에서 **"이 게시자의 모든 문서 신뢰"** 클릭
 
-**한글이 깨져 보여요 (VBA 편집기에서)**
-- `ReplyAlert.bas` 는 한글 Windows 인코딩(CP949)으로 저장되어 있습니다. Windows 의 "유니코드를 지원하지 않는 프로그램용 언어" 가 한국어가 아니면 깨질 수 있습니다. 이 경우 범주/목록 이름 설정을 원하는 이름으로 직접 바꿔 주세요.
+**범주/목록/알림의 한글이 깨져 보여요 (`³» ¸ÞÀÏ` 같은 글자)**
+- 예전 버전에서 생긴 문제입니다. Windows 의 "유니코드를 지원하지 않는 프로그램용 언어" 가 한국어가 아니면 생깁니다.
+- 최신 `ReplyAlert.bas` 로 바꾸면 해결됩니다. 깨진 이름으로 생긴 범주와 목록 폴더는 **Outlook 을 켜고 2분쯤 지나 첫 메일이 올 때 자동으로 정리**됩니다.
+- 그래도 남아 있으면 **홈 > 분류 > 모든 범주** 에서 깨진 범주를 삭제하고, 깨진 검색 폴더는 우클릭 > 폴더 삭제 하세요.
+
+**Alt + F8 목록에 매크로가 안 보여요**
+- VBA 편집기(Alt + F11)에서 `ReplyAlert` 모듈을 열고, 실행할 `Sub 이름()` 줄 안을 한 번 클릭한 뒤 **F5** 를 누르면 실행됩니다.
 
 ---
 
@@ -313,3 +328,4 @@ Outlook 기본 기능인 **플래그 > 완료로 표시** 를 해도 `내 답장
 3. 검색 폴더 `내 메일 회신`, `내 앞으로 온 메일`, `내 답장 필요`, `답장 대기` 는 우클릭 > **폴더 삭제** (메일은 지워지지 않습니다)
 4. 클릭 처리기: `%APPDATA%\ReplyAlert` 폴더 삭제, 레지스트리 `HKEY_CURRENT_USER\Software\Classes\replyalert` 키 삭제
 5. 설정 기록: 레지스트리 `HKEY_CURRENT_USER\Software\VB and VBA Program Settings\ReplyAlert` 키 삭제
+6. 이름 목록: `%APPDATA%\ReplyAlert\names.txt` (4번 폴더와 함께 삭제됨)

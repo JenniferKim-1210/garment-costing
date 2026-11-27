@@ -1,2 +1,3 @@
 *.bas -text
 ThisOutlookSession.txt -text
+src/*.bas text eol=lf
