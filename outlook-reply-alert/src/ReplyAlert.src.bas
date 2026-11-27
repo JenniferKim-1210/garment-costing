@@ -29,7 +29,7 @@ Attribute VB_Name = "ReplyAlert"
 '  Macros (Alt+F8): MarkDone, ShowReplyList, ShowAttentionList, ShowMyTodoList,
 '    ShowNoReplyList, CheckMyTodo, CheckNoReply, ScanRecentInbox, RecheckReplyMarks, TestSelectedMail,
 '    TestToast, EditMyNames, FixBrokenCategories, ReplyReport, EditPeople, TagPeopleNow,
-'    ShowUrgentList, EditKeywords, SetDeadline
+'    ShowUrgentList, EditKeywords, SetDeadline, WeeklyReportForClaude
 '==========================================================================
 Option Explicit
 
@@ -2696,6 +2696,203 @@ Private Function Snippet(ByVal txt As String, ByVal pos As Long, ByVal ln As Lon
         s = Replace(s, "  ", " ")
     Loop
     Snippet = Trim$(s)
+End Function
+
+' ==========================================================================
+'  WeeklyReportForClaude : 기간 동안 내가 메일을 보낸 스레드의 메일을 정리해서
+'  "주간 보고로 요약해 줘" 요청문과 함께 클립보드에 복사 -> Claude 창에 붙여넣기
+'  (파일로도 저장: %APPDATA%\ReplyAlert\WeeklyReport.txt)
+' ==========================================================================
+Public Sub WeeklyReportForClaude()
+    Dim v As String, days As Long, cutoff As Date
+    Dim myKeys As Object, threads As Object, subj As Object, lastT As Object
+    Dim folders As New Collection, fld As Object, inbox As Object
+    Dim tbl As Object, arr As Variant, r As Long, t As Date, topic As String, conv As String, key As String, k As Variant
+    Dim C_EID As Long, C_CLASS As Long, C_TIME As Long, C_CONV As Long, C_TOPIC As Long, C_SUBJ As Long
+    Dim out As String, body As String, itm As Object, msgs As Collection, i As Long, j As Long
+    Dim nThread As Long, nMail As Long, total As Long, perMsg As Long, path As String, ps As String
+    Dim arrM() As Variant, tmp As Variant, who As String, isMine As Boolean
+
+    EnsureInit
+    v = InputBox("How many days back should the weekly report cover?" & vbCrLf & "(e.g. 7)", "ReplyAlert", "7")
+    If Len(Trim$(v)) = 0 Then Exit Sub
+    If Not IsNumeric(v) Then Exit Sub
+    days = CLng(v)
+    If days < 1 Then Exit Sub
+    cutoff = Date - days + 1
+    Set myKeys = NewDict(): Set threads = NewDict(): Set subj = NewDict(): Set lastT = NewDict()
+
+    On Error Resume Next
+    ' 1) 내가 보낸 메일 -> 스레드
+    Set tbl = Application.Session.GetDefaultFolder(olFolderSentMail).GetTable
+    tbl.Columns.RemoveAll
+    C_EID = AddCol(tbl, "EntryID")
+    C_CLASS = AddCol(tbl, "MessageClass")
+    C_TIME = AddCol(tbl, "SentOn")
+    C_CONV = AddCol(tbl, PR_CONVERSATION_ID)
+    C_TOPIC = AddCol(tbl, PR_CONVERSATION_TOPIC)
+    C_SUBJ = AddCol(tbl, "Subject")
+    tbl.Sort "[SentOn]", True
+    Do Until tbl.EndOfTable
+        arr = tbl.GetArray(TABLE_CHUNK)
+        If Not IsArray(arr) Then Exit Do
+        For r = LBound(arr, 1) To UBound(arr, 1)
+            t = VDate(AV(arr, r, C_TIME))
+            If t <> 0 And t < cutoff Then GoTo SentDone
+            If Left$(RowClass(arr, r, C_CLASS), 8) = "ipm.note" Then
+                conv = VHex(AV(arr, r, C_CONV))
+                topic = VStr(AV(arr, r, C_TOPIC))
+                If Len(topic) = 0 Then topic = VStr(AV(arr, r, C_SUBJ))
+                topic = NormTopic(topic)
+                If Len(conv) > 0 Then myKeys("c:" & conv) = True
+                If Len(topic) >= 4 Then myKeys("t:" & topic) = True
+                AddReportMail threads, subj, lastT, ReportKey(conv, topic, VStr(AV(arr, r, C_EID))), t, _
+                              VStr(AV(arr, r, C_EID)), True, VStr(AV(arr, r, C_SUBJ))
+            End If
+        Next r
+        DoEvents
+    Loop
+SentDone:
+    If threads.Count = 0 Then
+        MsgBoxU "최근 " & days & "일 동안 보낸 메일이 없습니다.", vbInformation
+        Exit Sub
+    End If
+
+    ' 2) 받은 편지함(하위 폴더 포함)에서 그 스레드의 메일
+    Set inbox = Application.Session.GetDefaultFolder(olFolderInbox)
+    folders.Add inbox
+    AddSubFolders inbox, folders, 0
+    For Each fld In folders
+        Set tbl = Nothing
+        Set tbl = fld.GetTable
+        If Not tbl Is Nothing Then
+            tbl.Columns.RemoveAll
+            C_EID = AddCol(tbl, "EntryID")
+            C_CLASS = AddCol(tbl, "MessageClass")
+            C_TIME = AddCol(tbl, "ReceivedTime")
+            C_CONV = AddCol(tbl, PR_CONVERSATION_ID)
+            C_TOPIC = AddCol(tbl, PR_CONVERSATION_TOPIC)
+            C_SUBJ = AddCol(tbl, "Subject")
+            tbl.Sort "[ReceivedTime]", True
+            Do Until tbl.EndOfTable
+                arr = tbl.GetArray(TABLE_CHUNK)
+                If Not IsArray(arr) Then Exit Do
+                For r = LBound(arr, 1) To UBound(arr, 1)
+                    t = VDate(AV(arr, r, C_TIME))
+                    If t <> 0 And t < cutoff Then Exit Do
+                    If Left$(RowClass(arr, r, C_CLASS), 8) = "ipm.note" And Left$(RowClass(arr, r, C_CLASS), 14) <> "ipm.note.rules" Then
+                        conv = VHex(AV(arr, r, C_CONV))
+                        topic = VStr(AV(arr, r, C_TOPIC))
+                        If Len(topic) = 0 Then topic = VStr(AV(arr, r, C_SUBJ))
+                        topic = NormTopic(topic)
+                        If (Len(conv) > 0 And myKeys.Exists("c:" & conv)) Or (Len(topic) >= 4 And myKeys.Exists("t:" & topic)) Then
+                            AddReportMail threads, subj, lastT, ReportKey(conv, topic, VStr(AV(arr, r, C_EID))), t, _
+                                          VStr(AV(arr, r, C_EID)), False, VStr(AV(arr, r, C_SUBJ))
+                        End If
+                    End If
+                Next r
+                DoEvents
+            Loop
+        End If
+    Next fld
+
+    ' 3) 본문 정리 (메일 수가 많으면 메일당 글자 수를 줄임)
+    For Each k In threads.Keys
+        total = total + threads(k).Count
+    Next k
+    perMsg = 1200
+    If total > 150 Then perMsg = 700
+    If total > 300 Then perMsg = 400
+    If total > 600 Then perMsg = 250
+
+    out = "아래는 지난 " & days & "일 동안 내가 주고받은 업무 메일을 스레드(같은 제목)별로 정리한 것입니다." & vbCrLf & _
+          "이 내용으로 팀장님께 보낼 주간 업무 보고를 한국어로 작성해 주세요." & vbCrLf & vbCrLf & _
+          "형식:" & vbCrLf & _
+          "1. 거래처/업무(스타일, PO)별로 묶어서" & vbCrLf & _
+          "   - 진행 상황 (2~3줄)" & vbCrLf & _
+          "   - 이슈 / 리스크" & vbCrLf & _
+          "   - 다음 주 할 일 (담당자, 기한이 있으면 함께)" & vbCrLf & _
+          "2. 마지막에 '아직 회신을 받지 못했거나 내가 답해야 하는 건' 목록" & vbCrLf & vbCrLf & _
+          "간결하게 써 주시고, 메일에 없는 내용은 지어내지 마세요. ""나""는 이 보고서를 쓰는 사람입니다." & vbCrLf & _
+          "==========================================================" & vbCrLf
+
+    For Each k In threads.Keys
+        Set msgs = threads(k)
+        ReDim arrM(1 To msgs.Count)
+        For i = 1 To msgs.Count
+            arrM(i) = msgs(i)
+        Next i
+        For i = 1 To UBound(arrM) - 1                  ' 시간 순서
+            For j = i + 1 To UBound(arrM)
+                If arrM(j)(0) < arrM(i)(0) Then
+                    tmp = arrM(i): arrM(i) = arrM(j): arrM(j) = tmp
+                End If
+            Next j
+        Next i
+        nThread = nThread + 1
+        out = out & vbCrLf & "### [" & nThread & "] " & subj(k) & vbCrLf
+        For i = 1 To UBound(arrM)
+            Set itm = Nothing
+            Set itm = GetItemSafe(CStr(arrM(i)(1)))
+            If Not itm Is Nothing Then
+                isMine = arrM(i)(2)
+                If isMine Then who = "나" Else who = itm.SenderName
+                body = CleanBodyText(NewPartOfBody(itm, perMsg * 2), perMsg)
+                out = out & "[" & Format$(arrM(i)(0), "mm/dd hh:nn") & "] " & who & " -> " & ShortList(itm.To) & vbCrLf & _
+                      body & vbCrLf
+                nMail = nMail + 1
+                If nMail Mod 10 = 0 Then DoEvents
+            End If
+        Next i
+    Next k
+    On Error GoTo 0
+
+    ' 4) 파일로 저장 + 클립보드에 복사
+    path = Environ$("APPDATA") & "\ReplyAlert\WeeklyReport.txt"
+    WriteUtf8 path, out
+    ps = "Get-Content -LiteralPath '" & Replace(path, "'", "''") & "' -Raw -Encoding UTF8 | Set-Clipboard"
+    On Error Resume Next
+    Shell "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand " & B64Utf16(ps), vbHide
+    On Error GoTo 0
+    MsgBoxU "스레드 " & nThread & "개, 메일 " & nMail & "통을 정리해서 복사했습니다." & vbCrLf & vbCrLf & _
+            "Claude 창에 Ctrl+V 로 붙여넣고 보내면 주간 보고가 만들어집니다." & vbCrLf & vbCrLf & _
+            "(붙여넣기가 안 되면 이 파일을 메모장으로 열어 전체 복사하세요:" & vbCrLf & path & ")", vbInformation
+End Sub
+
+' 스레드 키: 제목(RE:/FW: 뗀 것) 우선, 없으면 대화 ID
+Private Function ReportKey(ByVal conv As String, ByVal topic As String, ByVal eid As String) As String
+    If Len(topic) >= 4 Then
+        ReportKey = "t:" & topic
+    ElseIf Len(conv) > 0 Then
+        ReportKey = "c:" & conv
+    Else
+        ReportKey = "e:" & eid
+    End If
+End Function
+
+Private Sub AddReportMail(ByVal threads As Object, ByVal subj As Object, ByVal lastT As Object, ByVal key As String, _
+                          ByVal t As Date, ByVal eid As String, ByVal isMine As Boolean, ByVal subject As String)
+    Dim c As Collection
+    If Not threads.Exists(key) Then
+        Set c = New Collection
+        threads.Add key, c
+        subj(key) = subject
+    End If
+    threads(key).Add Array(t, eid, isMine)
+End Sub
+
+' 본문 정리: 빈 줄/공백 줄이기, 길이 제한
+Private Function CleanBodyText(ByVal s As String, ByVal maxLen As Long) As String
+    Dim lines() As String, i As Long, ln As String, out As String
+    s = Replace(Replace(s, vbCr, ""), ChrW(160), " ")
+    lines = Split(s, vbLf)
+    For i = LBound(lines) To UBound(lines)
+        ln = Trim$(Replace(lines(i), vbTab, " "))
+        If Len(ln) > 0 Then out = out & ln & vbCrLf
+        If Len(out) > maxLen Then Exit For
+    Next i
+    If Len(out) > maxLen Then out = Left$(out, maxLen) & " ..." & vbCrLf
+    CleanBodyText = out
 End Function
 
 Public Sub EditPeople()

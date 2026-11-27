@@ -29,7 +29,7 @@ Attribute VB_Name = "ReplyAlert"
 '  Macros (Alt+F8): MarkDone, ShowReplyList, ShowAttentionList, ShowMyTodoList,
 '    ShowNoReplyList, CheckMyTodo, CheckNoReply, ScanRecentInbox, RecheckReplyMarks, TestSelectedMail,
 '    TestToast, EditMyNames, FixBrokenCategories, ReplyReport, EditPeople, TagPeopleNow,
-'    ShowUrgentList, EditKeywords, SetDeadline
+'    ShowUrgentList, EditKeywords, SetDeadline, WeeklyReportForClaude
 '==========================================================================
 Option Explicit
 
@@ -2646,6 +2646,202 @@ Private Function Snippet(ByVal txt As String, ByVal pos As Long, ByVal ln As Lon
         s = Replace(s, "  ", " ")
     Loop
     Snippet = Trim$(s)
+End Function
+
+' ==========================================================================
+' WeeklyReportForClaude :
+' " " -> Claude
+' ( : %APPDATA%\ReplyAlert\WeeklyReport.txt)
+' ==========================================================================
+Public Sub WeeklyReportForClaude()
+    Dim v As String, days As Long, cutoff As Date
+    Dim myKeys As Object, threads As Object, subj As Object, lastT As Object
+    Dim folders As New Collection, fld As Object, inbox As Object
+    Dim tbl As Object, arr As Variant, r As Long, t As Date, topic As String, conv As String, key As String, k As Variant
+    Dim C_EID As Long, C_CLASS As Long, C_TIME As Long, C_CONV As Long, C_TOPIC As Long, C_SUBJ As Long
+    Dim out As String, body As String, itm As Object, msgs As Collection, i As Long, j As Long
+    Dim nThread As Long, nMail As Long, total As Long, perMsg As Long, path As String, ps As String
+    Dim arrM() As Variant, tmp As Variant, who As String, isMine As Boolean
+
+    EnsureInit
+    v = InputBox("How many days back should the weekly report cover?" & vbCrLf & "(e.g. 7)", "ReplyAlert", "7")
+    If Len(Trim$(v)) = 0 Then Exit Sub
+    If Not IsNumeric(v) Then Exit Sub
+    days = CLng(v)
+    If days < 1 Then Exit Sub
+    cutoff = Date - days + 1
+    Set myKeys = NewDict(): Set threads = NewDict(): Set subj = NewDict(): Set lastT = NewDict()
+
+    On Error Resume Next
+    ' 1) ->
+    Set tbl = Application.Session.GetDefaultFolder(olFolderSentMail).GetTable
+    tbl.Columns.RemoveAll
+    C_EID = AddCol(tbl, "EntryID")
+    C_CLASS = AddCol(tbl, "MessageClass")
+    C_TIME = AddCol(tbl, "SentOn")
+    C_CONV = AddCol(tbl, PR_CONVERSATION_ID)
+    C_TOPIC = AddCol(tbl, PR_CONVERSATION_TOPIC)
+    C_SUBJ = AddCol(tbl, "Subject")
+    tbl.Sort "[SentOn]", True
+    Do Until tbl.EndOfTable
+        arr = tbl.GetArray(TABLE_CHUNK)
+        If Not IsArray(arr) Then Exit Do
+        For r = LBound(arr, 1) To UBound(arr, 1)
+            t = VDate(AV(arr, r, C_TIME))
+            If t <> 0 And t < cutoff Then GoTo SentDone
+            If Left$(RowClass(arr, r, C_CLASS), 8) = "ipm.note" Then
+                conv = VHex(AV(arr, r, C_CONV))
+                topic = VStr(AV(arr, r, C_TOPIC))
+                If Len(topic) = 0 Then topic = VStr(AV(arr, r, C_SUBJ))
+                topic = NormTopic(topic)
+                If Len(conv) > 0 Then myKeys("c:" & conv) = True
+                If Len(topic) >= 4 Then myKeys("t:" & topic) = True
+                AddReportMail threads, subj, lastT, ReportKey(conv, topic, VStr(AV(arr, r, C_EID))), t, _
+                              VStr(AV(arr, r, C_EID)), True, VStr(AV(arr, r, C_SUBJ))
+            End If
+        Next r
+        DoEvents
+    Loop
+SentDone:
+    If threads.Count = 0 Then
+        MsgBoxU U("\uCD5C\uADFC ") & days & U("\uC77C \uB3D9\uC548 \uBCF4\uB0B8 \uBA54\uC77C\uC774 \uC5C6\uC2B5\uB2C8\uB2E4."), vbInformation
+        Exit Sub
+    End If
+
+    ' 2) ( )
+    Set inbox = Application.Session.GetDefaultFolder(olFolderInbox)
+    folders.Add inbox
+    AddSubFolders inbox, folders, 0
+    For Each fld In folders
+        Set tbl = Nothing
+        Set tbl = fld.GetTable
+        If Not tbl Is Nothing Then
+            tbl.Columns.RemoveAll
+            C_EID = AddCol(tbl, "EntryID")
+            C_CLASS = AddCol(tbl, "MessageClass")
+            C_TIME = AddCol(tbl, "ReceivedTime")
+            C_CONV = AddCol(tbl, PR_CONVERSATION_ID)
+            C_TOPIC = AddCol(tbl, PR_CONVERSATION_TOPIC)
+            C_SUBJ = AddCol(tbl, "Subject")
+            tbl.Sort "[ReceivedTime]", True
+            Do Until tbl.EndOfTable
+                arr = tbl.GetArray(TABLE_CHUNK)
+                If Not IsArray(arr) Then Exit Do
+                For r = LBound(arr, 1) To UBound(arr, 1)
+                    t = VDate(AV(arr, r, C_TIME))
+                    If t <> 0 And t < cutoff Then Exit Do
+                    If Left$(RowClass(arr, r, C_CLASS), 8) = "ipm.note" And Left$(RowClass(arr, r, C_CLASS), 14) <> "ipm.note.rules" Then
+                        conv = VHex(AV(arr, r, C_CONV))
+                        topic = VStr(AV(arr, r, C_TOPIC))
+                        If Len(topic) = 0 Then topic = VStr(AV(arr, r, C_SUBJ))
+                        topic = NormTopic(topic)
+                        If (Len(conv) > 0 And myKeys.Exists("c:" & conv)) Or (Len(topic) >= 4 And myKeys.Exists("t:" & topic)) Then
+                            AddReportMail threads, subj, lastT, ReportKey(conv, topic, VStr(AV(arr, r, C_EID))), t, _
+                                          VStr(AV(arr, r, C_EID)), False, VStr(AV(arr, r, C_SUBJ))
+                        End If
+                    End If
+                Next r
+                DoEvents
+            Loop
+        End If
+    Next fld
+
+    ' 3) ( )
+    For Each k In threads.Keys
+        total = total + threads(k).Count
+    Next k
+    perMsg = 1200
+    If total > 150 Then perMsg = 700
+    If total > 300 Then perMsg = 400
+    If total > 600 Then perMsg = 250
+
+    out = U("\uC544\uB798\uB294 \uC9C0\uB09C ") & days & U("\uC77C \uB3D9\uC548 \uB0B4\uAC00 \uC8FC\uACE0\uBC1B\uC740 \uC5C5\uBB34 \uBA54\uC77C\uC744 \uC2A4\uB808\uB4DC(\uAC19\uC740 \uC81C\uBAA9)\uBCC4\uB85C \uC815\uB9AC\uD55C \uAC83\uC785\uB2C8\uB2E4.") & vbCrLf & _
+          U("\uC774 \uB0B4\uC6A9\uC73C\uB85C \uD300\uC7A5\uB2D8\uAED8 \uBCF4\uB0BC \uC8FC\uAC04 \uC5C5\uBB34 \uBCF4\uACE0\uB97C \uD55C\uAD6D\uC5B4\uB85C \uC791\uC131\uD574 \uC8FC\uC138\uC694.") & vbCrLf & vbCrLf & _
+          U("\uD615\uC2DD:") & vbCrLf & _
+          U("1. \uAC70\uB798\uCC98/\uC5C5\uBB34(\uC2A4\uD0C0\uC77C, PO)\uBCC4\uB85C \uBB36\uC5B4\uC11C") & vbCrLf & _
+          U("   - \uC9C4\uD589 \uC0C1\uD669 (2~3\uC904)") & vbCrLf & _
+          U("   - \uC774\uC288 / \uB9AC\uC2A4\uD06C") & vbCrLf & _
+          U("   - \uB2E4\uC74C \uC8FC \uD560 \uC77C (\uB2F4\uB2F9\uC790, \uAE30\uD55C\uC774 \uC788\uC73C\uBA74 \uD568\uAED8)") & vbCrLf & _
+          U("2. \uB9C8\uC9C0\uB9C9\uC5D0 '\uC544\uC9C1 \uD68C\uC2E0\uC744 \uBC1B\uC9C0 \uBABB\uD588\uAC70\uB098 \uB0B4\uAC00 \uB2F5\uD574\uC57C \uD558\uB294 \uAC74' \uBAA9\uB85D") & vbCrLf & vbCrLf & _
+          U("\uAC04\uACB0\uD558\uAC8C \uC368 \uC8FC\uC2DC\uACE0, \uBA54\uC77C\uC5D0 \uC5C6\uB294 \uB0B4\uC6A9\uC740 \uC9C0\uC5B4\uB0B4\uC9C0 \uB9C8\uC138\uC694. ""\uB098""\uB294 \uC774 \uBCF4\uACE0\uC11C\uB97C \uC4F0\uB294 \uC0AC\uB78C\uC785\uB2C8\uB2E4.") & vbCrLf & _
+          "==========================================================" & vbCrLf
+
+    For Each k In threads.Keys
+        Set msgs = threads(k)
+        ReDim arrM(1 To msgs.Count)
+        For i = 1 To msgs.Count
+            arrM(i) = msgs(i)
+        Next i
+        For i = 1 To UBound(arrM) - 1
+            For j = i + 1 To UBound(arrM)
+                If arrM(j)(0) < arrM(i)(0) Then
+                    tmp = arrM(i): arrM(i) = arrM(j): arrM(j) = tmp
+                End If
+            Next j
+        Next i
+        nThread = nThread + 1
+        out = out & vbCrLf & "### [" & nThread & "] " & subj(k) & vbCrLf
+        For i = 1 To UBound(arrM)
+            Set itm = Nothing
+            Set itm = GetItemSafe(CStr(arrM(i)(1)))
+            If Not itm Is Nothing Then
+                isMine = arrM(i)(2)
+                If isMine Then who = U("\uB098") Else who = itm.SenderName
+                body = CleanBodyText(NewPartOfBody(itm, perMsg * 2), perMsg)
+                out = out & "[" & Format$(arrM(i)(0), "mm/dd hh:nn") & "] " & who & " -> " & ShortList(itm.To) & vbCrLf & _
+                      body & vbCrLf
+                nMail = nMail + 1
+                If nMail Mod 10 = 0 Then DoEvents
+            End If
+        Next i
+    Next k
+    On Error GoTo 0
+
+    ' 4) +
+    path = Environ$("APPDATA") & "\ReplyAlert\WeeklyReport.txt"
+    WriteUtf8 path, out
+    ps = "Get-Content -LiteralPath '" & Replace(path, "'", "''") & "' -Raw -Encoding UTF8 | Set-Clipboard"
+    On Error Resume Next
+    Shell "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand " & B64Utf16(ps), vbHide
+    On Error GoTo 0
+    MsgBoxU U("\uC2A4\uB808\uB4DC ") & nThread & U("\uAC1C, \uBA54\uC77C ") & nMail & U("\uD1B5\uC744 \uC815\uB9AC\uD574\uC11C \uBCF5\uC0AC\uD588\uC2B5\uB2C8\uB2E4.") & vbCrLf & vbCrLf & _
+            U("Claude \uCC3D\uC5D0 Ctrl+V \uB85C \uBD99\uC5EC\uB123\uACE0 \uBCF4\uB0B4\uBA74 \uC8FC\uAC04 \uBCF4\uACE0\uAC00 \uB9CC\uB4E4\uC5B4\uC9D1\uB2C8\uB2E4.") & vbCrLf & vbCrLf & _
+            U("(\uBD99\uC5EC\uB123\uAE30\uAC00 \uC548 \uB418\uBA74 \uC774 \uD30C\uC77C\uC744 \uBA54\uBAA8\uC7A5\uC73C\uB85C \uC5F4\uC5B4 \uC804\uCCB4 \uBCF5\uC0AC\uD558\uC138\uC694:") & vbCrLf & path & ")", vbInformation
+End Sub
+
+' : (RE:/FW: ) , ID
+Private Function ReportKey(ByVal conv As String, ByVal topic As String, ByVal eid As String) As String
+    If Len(topic) >= 4 Then
+        ReportKey = "t:" & topic
+    ElseIf Len(conv) > 0 Then
+        ReportKey = "c:" & conv
+    Else
+        ReportKey = "e:" & eid
+    End If
+End Function
+
+Private Sub AddReportMail(ByVal threads As Object, ByVal subj As Object, ByVal lastT As Object, ByVal key As String, _
+                          ByVal t As Date, ByVal eid As String, ByVal isMine As Boolean, ByVal subject As String)
+    Dim c As Collection
+    If Not threads.Exists(key) Then
+        Set c = New Collection
+        threads.Add key, c
+        subj(key) = subject
+    End If
+    threads(key).Add Array(t, eid, isMine)
+End Sub
+
+Private Function CleanBodyText(ByVal s As String, ByVal maxLen As Long) As String
+    Dim lines() As String, i As Long, ln As String, out As String
+    s = Replace(Replace(s, vbCr, ""), ChrW(160), " ")
+    lines = Split(s, vbLf)
+    For i = LBound(lines) To UBound(lines)
+        ln = Trim$(Replace(lines(i), vbTab, " "))
+        If Len(ln) > 0 Then out = out & ln & vbCrLf
+        If Len(out) > maxLen Then Exit For
+    Next i
+    If Len(out) > maxLen Then out = Left$(out, maxLen) & " ..." & vbCrLf
+    CleanBodyText = out
 End Function
 
 Public Sub EditPeople()
