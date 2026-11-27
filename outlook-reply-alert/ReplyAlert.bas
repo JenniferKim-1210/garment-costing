@@ -28,7 +28,7 @@ Attribute VB_Name = "ReplyAlert"
 '
 '  Macros (Alt+F8): MarkDone, ShowReplyList, ShowAttentionList, ShowMyTodoList,
 '    ShowNoReplyList, CheckMyTodo, CheckNoReply, ScanRecentInbox, RecheckReplyMarks, TestSelectedMail,
-'    TestToast, EditMyNames
+'    TestToast, EditMyNames, FixBrokenCategories
 '==========================================================================
 Option Explicit
 
@@ -43,9 +43,10 @@ Private Const STARTUP_SCAN_DAYS As Long = 1         ' check mail that arrived wh
 ' [Addressed to me] (purple) - body starts with "Hi Jennifer", "Dear Jennifer", Korean name + title ...
 Private Const ATTENTION_ENABLED As Boolean = True
 Private Const ATTENTION_EXTRA_NAMES As String = ""  ' extra English names, e.g. "Jenny;Ms. Kim" (Korean names: EditMyNames)
-Private Const ATTENTION_LINES As Long = 5           ' how many lines from the top of the body to check
+Private Const ATTENTION_LINES As Long = 8           ' how many lines from the top of the body to check
+Private Const ATTENTION_AUTO_NAMES As Boolean = True ' also use my name from Outlook (e.g. "Na Hyun", "Nahyun", "Ms. Kim")
 Private Const ATTENTION_TOAST As Boolean = False    ' True = Windows notification on arrival
-Private Const CLEAR_ATTENTION_WHEN_I_REPLY As Boolean = True ' remove the mark after I reply
+Private Const CLEAR_ATTENTION_WHEN_I_REPLY As Boolean = False ' True = remove the mark after I reply
 
 ' [Needs my reply] (blue) - mail to me that I have not replied to / read
 Private Const TODO_ENABLED As Boolean = True
@@ -158,6 +159,10 @@ Private m_FuDirty As Boolean
 Private m_FuToastPending As Boolean
 Private m_FuToastCount As Long
 Private m_LastBackground As Date
+Private m_FuChecked As Object      ' EntryID -> (FU_*)
+Private m_FuCheckedTime As Object  ' EntryID ->
+Private m_FuIncomplete As Boolean
+Private m_FuDailyPending As Boolean
 
 
 '==========================================================================
@@ -307,7 +312,7 @@ Public Sub CheckNoReply()
     m_Busy = True
     EnsureMaps True
     SaveSetting SETTINGS_APP, "Followup", "LastRun", Format$(Date, "yyyy-mm-dd")
-    nNew = ScanFollowups(waiting)
+    nNew = ScanFollowups(waiting, False)
     m_FuDirty = False
     m_Busy = False
     MsgBoxU U("\uBCF4\uB0B8 \uC9C0 ") & FOLLOWUP_DAYS & U("\uC77C\uC774 \uC9C0\uB0AC\uB294\uB370 \uB2F5\uC7A5\uC774 \uC5C6\uB294 \uBA54\uC77C: ") & waiting & U("\uAC74") & vbCrLf & _
@@ -317,21 +322,27 @@ Public Sub CheckNoReply()
 End Sub
 
 Public Sub ScanRecentInbox()
-    Dim n As Long, attn As Long
+    Dim n As Long, attn As Long, v As String, days As Long
     EnsureInit
     If m_Busy Then
         MsgBoxU U("\uC9C0\uAE08 \uB2E4\uB978 \uAC80\uC0AC\uB97C \uD558\uB294 \uC911\uC785\uB2C8\uB2E4. \uC7A0\uC2DC \uD6C4 \uB2E4\uC2DC \uC2E4\uD589\uD558\uC138\uC694."), vbInformation, APP_TITLE
         Exit Sub
     End If
+    ' (InputBox )
+    v = InputBox("How many days back should I check the Inbox?" & vbCrLf & "(e.g. 14, 30, 60)", "ReplyAlert", CStr(SCAN_DAYS))
+    If Len(Trim$(v)) = 0 Then Exit Sub
+    If Not IsNumeric(v) Then Exit Sub
+    days = CLng(v)
+    If days < 1 Then Exit Sub
     m_Busy = True
     EnsureMaps True
-    ScanInboxTable SCAN_DAYS, False, n, attn
+    ScanInboxTable days, False, n, attn
     m_Busy = False
-    MsgBoxU U("\uCD5C\uADFC ") & SCAN_DAYS & U("\uC77C \uBC1B\uC740 \uBA54\uC77C\uC5D0\uC11C \uC0C8\uB85C \uD45C\uC2DC\uD588\uC2B5\uB2C8\uB2E4.") & vbCrLf & vbCrLf & _
+    MsgBoxU U("\uCD5C\uADFC ") & days & U("\uC77C \uBC1B\uC740 \uBA54\uC77C\uC5D0\uC11C \uC0C8\uB85C \uD45C\uC2DC\uD588\uC2B5\uB2C8\uB2E4.") & vbCrLf & vbCrLf & _
            U("  \uB0B4 \uBA54\uC77C\uC5D0 \uB300\uD55C \uD68C\uC2E0: ") & n & U("\uAC74") & vbCrLf & _
            U("  \uB0B4 \uC55E\uC73C\uB85C \uC628 \uBA54\uC77C: ") & attn & U("\uAC74") & vbCrLf & vbCrLf & _
-           U("(\uC774\uBBF8 \uD45C\uC2DC\uB41C \uBA54\uC77C, \uC774\uBBF8 \uD68C\uC2E0\uD55C \uBA54\uC77C\uC740 \uC81C\uC678)"), vbInformation, APP_TITLE
-    If CREATE_LISTS Then ShowReplyList
+           U("(\uC774\uBBF8 \uD45C\uC2DC\uB41C \uBA54\uC77C\uC740 \uC81C\uC678)"), vbInformation, APP_TITLE
+    If CREATE_LISTS Then ShowAttentionList
 End Sub
 
 Public Sub TestToast()
@@ -378,9 +389,12 @@ Public Sub TestSelectedMail()
 
     If IsFromMe(itm) Then
         st = FollowupState(itm)
+        If st = FU_WAITING Then st = ConversationFollowupState(itm, stText)
+        If st = FU_ANSWERED And Len(stText) > 0 Then stText = U(" (\uD68C\uC2E0 \uC704\uCE58: ") & stText & ")" Else stText = ""
+        reason = stText
         Select Case st
-            Case FU_WAITING: stText = U("\uB2F5\uC7A5 \uC5C6\uC74C (\uBCF4\uB0B8 \uC9C0 ") & FOLLOWUP_DAYS & U("\uC77C \uC9C0\uB098\uBA74 [\uB2F5\uC7A5 \uB300\uAE30] \uC5D0 \uD45C\uC2DC)")
-            Case FU_ANSWERED: stText = U("\uB2F5\uC7A5 \uBC1B\uC74C")
+            Case FU_WAITING: stText = U("\uB2F5\uC7A5 \uC5C6\uC74C - \uBAA8\uB4E0 \uD3F4\uB354\uC758 \uAC19\uC740 \uC2A4\uB808\uB4DC\uB97C \uD655\uC778\uD574\uB3C4 \uB2E4\uB978 \uC0AC\uB78C \uBA54\uC77C\uC774 \uC5C6\uC74C (\uBCF4\uB0B8 \uC9C0 ") & FOLLOWUP_DAYS & U("\uC77C \uC9C0\uB098\uBA74 [\uB2F5\uC7A5 \uB300\uAE30] \uC5D0 \uD45C\uC2DC)")
+            Case FU_ANSWERED: stText = U("\uB2F5\uC7A5 \uBC1B\uC74C") & reason
             Case FU_SUPERSEDED: stText = U("\uAC19\uC740 \uC2A4\uB808\uB4DC\uC5D0 \uB0B4\uAC00 \uB098\uC911\uC5D0 \uBCF4\uB0B8 \uBA54\uC77C\uC774 \uC788\uC74C (\uADF8 \uBA54\uC77C \uAE30\uC900\uC73C\uB85C \uD310\uB2E8)")
             Case FU_IGNORED: stText = U("\uC644\uB8CC \uCC98\uB9AC\uB428 / \uCD94\uC801 \uC548 \uD568")
         End Select
@@ -399,9 +413,18 @@ Public Sub TestSelectedMail()
         End If
         stText = AttentionMatch(itm)
         If Len(stText) = 0 Then
-            msg = msg & U("==> \uB0B4 \uC55E\uC73C\uB85C \uC628 \uBA54\uC77C: \uC544\uB2D8 (\uBCF8\uBB38 \uC55E ") & ATTENTION_LINES & U("\uC904\uC5D0 \uB0B4 \uC774\uB984\uC744 \uBD80\uB974\uB294 \uC778\uC0AC\uAC00 \uC5C6\uC74C)") & vbCrLf
+            msg = msg & U("==> \uB0B4 \uC55E\uC73C\uB85C \uC628 \uBA54\uC77C: \uC544\uB2D8 (\uBCF8\uBB38 \uC55E ") & ATTENTION_LINES & U("\uC904\uC5D0 \uC544\uB798 \uC774\uB984\uC744 \uBD80\uB974\uB294 \uC778\uC0AC\uAC00 \uC5C6\uC74C)") & vbCrLf & _
+                  U("    \uCC3E\uB294 \uC774\uB984: ") & Replace(ATTENTION_NAMES, ";", ", ") & vbCrLf & _
+                  U("    \uBCF8\uBB38 \uCCAB \uC904\uB4E4: ") & FirstLines(itm, 3) & vbCrLf
         Else
             msg = msg & U("==> \uB0B4 \uC55E\uC73C\uB85C \uC628 \uBA54\uC77C: \uB9DE\uC74C [") & Left$(stText, 60) & "]" & vbCrLf
+            If Not CatListHas(itm.Categories, ATTENTION_CATEGORY) Then
+                If IsBulkMail(itm) Then
+                    msg = msg & U("    (\uD45C\uC2DC \uC548 \uB428: \uC790\uB3D9 \uBC1C\uC1A1/\uB2E8\uCCB4 \uBA54\uC77C\uB85C \uD310\uB2E8)") & vbCrLf
+                Else
+                    msg = msg & U("    (\uC544\uC9C1 \uD45C\uC2DC \uC804: ScanRecentInbox \uB97C \uC2E4\uD589\uD558\uBA74 \uD45C\uC2DC\uB428)") & vbCrLf
+                End If
+            End If
         End If
         reason = TodoReason(itm)
         If Len(reason) = 0 Then
@@ -435,6 +458,12 @@ Private Sub RunScheduledChecks()
         CleanupGarbled
         GoTo Done
     End If
+    ' 0-1) (// , )
+    If GetSetting(SETTINGS_APP, "Cleanup", "Garbled2", "") = "" Then
+        SaveSetting SETTINGS_APP, "Cleanup", "Garbled2", "done"
+        CleanupGarbledItems
+        GoTo Done
+    End If
     ' 0-2) [ ] ( )
     If GetSetting(SETTINGS_APP, "Cleanup", "ReplyRecheck1", "") = "" Then
         SaveSetting SETTINGS_APP, "Cleanup", "ReplyRecheck1", "done"
@@ -464,11 +493,15 @@ Private Sub RunScheduledChecks()
     ' 3) [ ] + ( )
     If FOLLOWUP_ENABLED Then
         dailyDue = (GetSetting(SETTINGS_APP, "Followup", "LastRun", "") <> today)
-        If dailyDue Or m_FuDirty Then
-            ScanFollowups fuN
+        If dailyDue Then
+            SaveSetting SETTINGS_APP, "Followup", "LastRun", today
+            m_FuDailyPending = True
+        End If
+        If dailyDue Or m_FuDirty Or m_FuIncomplete Then
+            ScanFollowups fuN, True
             m_FuDirty = False
-            If dailyDue Then
-                SaveSetting SETTINGS_APP, "Followup", "LastRun", today
+            If m_FuDailyPending And Not m_FuIncomplete Then
+                m_FuDailyPending = False
                 m_FuToastCount = fuN
                 m_FuToastPending = (fuN > 0)
             End If
@@ -606,6 +639,8 @@ Private Sub EnsureDicts()
     If m_SmtpCache Is Nothing Then Set m_SmtpCache = NewDict()
     If m_TodoChecked Is Nothing Then Set m_TodoChecked = NewDict()
     If m_Seen Is Nothing Then Set m_Seen = NewDict()
+    If m_FuChecked Is Nothing Then Set m_FuChecked = NewDict()
+    If m_FuCheckedTime Is Nothing Then Set m_FuCheckedTime = NewDict()
 End Sub
 
 Private Sub EnsureMaps(ByVal force As Boolean)
@@ -773,7 +808,7 @@ End Sub
 '==========================================================================
 ' [ ] True. attnMarked = [ ]
 Private Function ProcessMail(ByVal itm As Object, ByVal notify As Boolean, Optional ByRef attnMarked As Boolean) As Boolean
-    Dim mine As Object, lv As Long
+    Dim mine As Object, lv As Long, handled As Boolean
     On Error GoTo Fail
     attnMarked = False
     If itm.Class <> olMail Then Exit Function
@@ -784,10 +819,11 @@ Private Function ProcessMail(ByVal itm As Object, ByVal notify As Boolean, Optio
     End If
 
     lv = GetPropLong(itm.PropertyAccessor, PR_LAST_VERB_EXECUTED)
-    If lv = VERB_REPLY Or lv = VERB_REPLY_ALL Or lv = VERB_FORWARD Then Exit Function
-    If IRepliedInThread(SafeConvId(itm), GetReceived(itm)) Then Exit Function
+    handled = (lv = VERB_REPLY Or lv = VERB_REPLY_ALL Or lv = VERB_FORWARD)
+    If Not handled Then handled = IRepliedInThread(SafeConvId(itm), GetReceived(itm))
 
-    If ATTENTION_ENABLED Then
+    ' [ ] (CLEAR_ATTENTION_WHEN_I_REPLY = False )
+    If ATTENTION_ENABLED And (Not handled Or Not CLEAR_ATTENTION_WHEN_I_REPLY) Then
         If Not CatListHas(itm.Categories, ATTENTION_CATEGORY) Then
             If Not IsBulkMail(itm) Then
                 If Len(AttentionMatch(itm)) > 0 Then
@@ -799,7 +835,7 @@ Private Function ProcessMail(ByVal itm As Object, ByVal notify As Boolean, Optio
         End If
     End If
 
-    If Not CatListHas(itm.Categories, CATEGORY_NAME) Then
+    If Not handled And Not CatListHas(itm.Categories, CATEGORY_NAME) Then
         Set mine = FindRepliedMine(itm)
         If Not mine Is Nothing Then
             MarkMail itm
@@ -1346,7 +1382,7 @@ End Function
 '==========================================================================
 ' (Table) [ ] .
 ' , waitingTotal =
-Private Function ScanFollowups(ByRef waitingTotal As Long) As Long
+Private Function ScanFollowups(ByRef waitingTotal As Long, ByVal sliced As Boolean) As Long
     Dim C_EID As Long, C_CLASS As Long, C_SENT As Long, C_CATS As Long
     Dim C_MSGID As Long, C_IRT As Long, C_CONV As Long
     Dim tbl As Object, arr As Variant, r As Long, itm As Object
@@ -1355,6 +1391,7 @@ Private Function ScanFollowups(ByRef waitingTotal As Long) As Long
 
     On Error GoTo Done
     waitingTotal = 0
+    m_FuIncomplete = False
     EnsureDicts
     newCut = Now - FOLLOWUP_DAYS
     oldCut = Now - FOLLOWUP_LOOKBACK_DAYS
@@ -1393,6 +1430,28 @@ Private Function ScanFollowups(ByRef waitingTotal As Long) As Long
 
             st = FollowupStateOf(VHex(AV(arr, r, C_CONV)), sentOn, NormId(VStr(AV(arr, r, C_MSGID))), _
                                  Len(VStr(AV(arr, r, C_IRT))) > 0, CatListHas(cats, DONE_CATEGORY))
+
+            ' 6
+            If st = FU_WAITING Then
+                If m_FuChecked.Exists(eid) Then
+                    If DateDiff("h", m_FuCheckedTime(eid), Now) < 6 Or m_FuChecked(eid) <> FU_WAITING Then
+                        st = m_FuChecked(eid)
+                        GoTo Decided
+                    End If
+                End If
+                If sliced Then
+                    If SliceOver() Then
+                        m_FuIncomplete = True
+                        GoTo Done
+                    End If
+                End If
+                Set itm = GetItemSafe(eid)
+                If Not itm Is Nothing Then st = ConversationFollowupState(itm)
+                m_FuChecked(eid) = st
+                m_FuCheckedTime(eid) = Now
+                Set itm = Nothing
+            End If
+Decided:
             If st = FU_WAITING Then
                 waitingTotal = waitingTotal + 1
                 If Not hasCat Then
@@ -1412,6 +1471,66 @@ NextRow:
 Done:
     If Err.Number <> 0 Then Debug.Print U("ReplyAlert.ScanFollowups \uC624\uB958: ") & Err.Description
     ScanFollowups = nNew
+End Function
+
+' () ( ). FU_ANSWERED / FU_SUPERSEDED / FU_WAITING
+' foundWhere =
+Private Function ConversationFollowupState(ByVal sentItem As Object, Optional ByRef foundWhere As String) As Long
+    Dim conv As Object, roots As Object, rt As Object, c As New Collection, it As Object
+    Dim sent As Date, after As Date, selfId As String, superseded As Boolean
+    On Error GoTo Done
+    ConversationFollowupState = FU_WAITING
+    foundWhere = ""
+    sent = SafeSentOn(sentItem)
+    If sent = 0 Then Exit Function
+    after = DateAdd("s", 5, sent)
+    selfId = SafeEntryId(sentItem)
+    Set conv = sentItem.GetConversation
+    If conv Is Nothing Then Exit Function
+    Set roots = conv.GetRootItems
+    For Each rt In roots
+        CollectConversation conv, rt, c, 0
+    Next rt
+    For Each it In c
+        If IsOtherMail(it, selfId) Then
+            If ItemTime(it) > after Then
+                If IsFromMe(it) Then
+                    superseded = True
+                ElseIf Not IsAutoReply(it) Then
+                    foundWhere = SafeFolderName(it)
+                    ConversationFollowupState = FU_ANSWERED
+                    Exit Function
+                End If
+            End If
+        End If
+    Next it
+    If superseded Then ConversationFollowupState = FU_SUPERSEDED
+Done:
+End Function
+
+Private Sub CollectConversation(ByVal conv As Object, ByVal itm As Object, ByVal c As Collection, ByVal depth As Long)
+    Dim kids As Object, k As Object
+    On Error GoTo Done
+    If depth > 40 Or c.Count > 300 Then Exit Sub
+    c.Add itm
+    Set kids = conv.GetChildren(itm)
+    For Each k In kids
+        CollectConversation conv, k, c, depth + 1
+    Next k
+Done:
+End Sub
+
+Private Function IsOtherMail(ByVal it As Object, ByVal selfId As String) As Boolean
+    On Error GoTo Done
+    If it.Class <> olMail Then Exit Function
+    If it.EntryID = selfId Then Exit Function
+    IsOtherMail = True
+Done:
+End Function
+
+Private Function SafeFolderName(ByVal itm As Object) As String
+    On Error Resume Next
+    SafeFolderName = itm.Parent.Name
 End Function
 
 Private Function FollowupStateOf(ByVal conv As String, ByVal sentOn As Date, ByVal msgId As String, _
@@ -1775,6 +1894,7 @@ Private Sub EnsureInit()
     ATTENTION_GREETINGS = "hi;hello;hey;dear;good morning;good afternoon;good evening;morning;greetings;attn;attention;to;" & _
                           U("\uC548\uB155\uD558\uC138\uC694;\uC548\uB155\uD558\uC2ED\uB2C8\uAE4C;\uC218\uC2E0;\uBC1B\uB294 \uC0AC\uB78C;\uC874\uACBD\uD558\uB294")
     ATTENTION_NAMES = LoadNames()
+    If ATTENTION_AUTO_NAMES Then ATTENTION_NAMES = ATTENTION_NAMES & ";" & AutoNames()
     m_Inited = True
 End Sub
 
@@ -1797,6 +1917,67 @@ Private Function LoadNames() As String
         If Len(ln) > 0 And Left$(ln, 1) <> "#" Then result = result & ln & ";"
     Next i
     LoadNames = result & ATTENTION_EXTRA_NAMES
+End Function
+
+' Outlook
+' ) "Kim, Na Hyun (Jennifer)" -> Jennifer; Na Hyun; Nahyun; Na-Hyun; Ms. Kim; Ms Kim
+Private Function AutoNames() As String
+    Dim eu As Object, disp As String, firstN As String, lastN As String, nick As String, p As Long, q As Long, out As String
+    On Error Resume Next
+    disp = Application.Session.CurrentUser.Name
+    Set eu = Application.Session.CurrentUser.AddressEntry.GetExchangeUser
+    If Not eu Is Nothing Then
+        firstN = Trim$(eu.FirstName)
+        lastN = Trim$(eu.LastName)
+    End If
+    p = InStr(1, disp, "(")
+    If p > 0 Then
+        q = InStr(p + 1, disp, ")")
+        If q > p Then nick = Trim$(Mid$(disp, p + 1, q - p - 1))
+        disp = Trim$(Left$(disp, p - 1))
+    End If
+    If Len(firstN) = 0 Then
+        p = InStr(1, disp, ",")
+        If p > 0 Then
+            lastN = Trim$(Left$(disp, p - 1))
+            firstN = Trim$(Mid$(disp, p + 1))
+        End If
+    End If
+    If IsAsciiText(nick) And Len(nick) > 1 Then out = out & nick & ";"
+    If IsAsciiText(firstN) And Len(firstN) > 1 Then
+        out = out & firstN & ";"
+        If InStr(firstN, " ") > 0 Or InStr(firstN, "-") > 0 Then
+            out = out & Replace(Replace(firstN, " ", ""), "-", "") & ";"
+            out = out & Replace(firstN, " ", "-") & ";"
+            out = out & Replace(firstN, "-", " ") & ";"
+        End If
+    End If
+    If IsAsciiText(lastN) And Len(lastN) > 1 Then out = out & "Ms. " & lastN & ";Ms " & lastN & ";"
+    AutoNames = out
+End Function
+
+Private Function IsAsciiText(ByVal s As String) As Boolean
+    Dim i As Long
+    If Len(s) = 0 Then Exit Function
+    For i = 1 To Len(s)
+        If AscW(Mid$(s, i, 1)) > 127 Or AscW(Mid$(s, i, 1)) < 0 Then Exit Function
+    Next i
+    IsAsciiText = True
+End Function
+
+Private Function FirstLines(ByVal mail As Object, ByVal n As Long) As String
+    Dim lines() As String, i As Long, k As Long, ln As String, out As String
+    On Error Resume Next
+    lines = Split(Left$(mail.Body, 2000), vbLf)
+    For i = LBound(lines) To UBound(lines)
+        ln = Trim$(Replace(Replace(lines(i), vbCr, ""), ChrW(160), " "))
+        If Len(ln) > 0 Then
+            out = out & " | " & Left$(ln, 40)
+            k = k + 1
+            If k >= n Then Exit For
+        End If
+    Next i
+    FirstLines = Mid$(out, 4)
 End Function
 
 ' ( Outlook )
@@ -1884,12 +2065,7 @@ Private Sub CleanupGarbled()
     Dim targets As Object, garbled As New Collection, eids As New Collection, delFolders As New Collection
     Dim cat As Object, f As Object, i As Long, eid As Variant, nm As Variant, itm As Object, n As Long
     On Error Resume Next
-    Set targets = NewDict()
-    targets("B3BB20B8DEC0CF20C8B8BDC5") = True          ' (CP949)
-    targets("B3BB20BED5C0B8B7CE20BFC220B8DEC0CF") = True
-    targets("B3BB20B4E4C0E520C7CABFE4") = True
-    targets("B4E4C0E520B4EBB1E2") = True
-    targets("BFCFB7E120C3B3B8AE") = True
+    Set targets = GarbledTargets()
 
     For Each cat In Application.Session.Categories
         If IsGarbled(cat.Name, targets) Then garbled.Add cat.Name
@@ -1925,6 +2101,100 @@ Private Sub CleanupGarbled()
         Application.Session.Categories.Remove CStr(nm)
     Next nm
 End Sub
+
+Private Function GarbledTargets() As Object
+    Dim t As Object
+    Set t = NewDict()
+    t("B3BB20B8DEC0CF20C8B8BDC5") = True          ' (CP949)
+    t("B3BB20BED5C0B8B7CE20BFC220B8DEC0CF") = True
+    t("B3BB20B4E4C0E520C7CABFE4") = True
+    t("B4E4C0E520B4EBB1E2") = True
+    t("BFCFB7E120C3B3B8AE") = True
+    Set GarbledTargets = t
+End Function
+
+Public Sub FixBrokenCategories()
+    Dim n As Long
+    EnsureInit
+    If m_Busy Then
+        MsgBoxU U("\uC9C0\uAE08 \uB2E4\uB978 \uAC80\uC0AC\uB97C \uD558\uB294 \uC911\uC785\uB2C8\uB2E4. \uC7A0\uC2DC \uD6C4 \uB2E4\uC2DC \uC2E4\uD589\uD558\uC138\uC694."), vbInformation, APP_TITLE
+        Exit Sub
+    End If
+    m_Busy = True
+    CleanupGarbled
+    n = CleanupGarbledItems()
+    m_Busy = False
+    MsgBoxU U("\uAE68\uC9C4 \uBC94\uC8FC\uB97C ") & n & U("\uAC74\uC758 \uBA54\uC77C\uC5D0\uC11C \uC9C0\uC6E0\uC2B5\uB2C8\uB2E4."), vbInformation, APP_TITLE
+End Sub
+
+Private Function CleanupGarbledItems() As Long
+    Dim folders As New Collection, fld As Object, inbox As Object, targets As Object, n As Long, cat As Object
+    Dim garbled As New Collection, nm As Variant
+    On Error Resume Next
+    Set targets = GarbledTargets()
+    Set inbox = Application.Session.GetDefaultFolder(olFolderInbox)
+    folders.Add inbox
+    AddSubFolders inbox, folders, 0
+    folders.Add Application.Session.GetDefaultFolder(olFolderSentMail)
+    folders.Add Application.Session.GetDefaultFolder(olFolderDeletedItems)
+    For Each fld In folders
+        n = n + CleanFolderGarbled(fld, targets, Now - 30)
+    Next fld
+    For Each cat In Application.Session.Categories
+        If IsGarbled(cat.Name, targets) Then garbled.Add cat.Name
+    Next cat
+    For Each nm In garbled
+        Application.Session.Categories.Remove CStr(nm)
+    Next nm
+    CleanupGarbledItems = n
+End Function
+
+Private Function CleanFolderGarbled(ByVal fld As Object, ByVal targets As Object, ByVal cutoff As Date) As Long
+    Dim tbl As Object, arr As Variant, r As Long, t As Date, cats As String, parts() As String, i As Long
+    Dim result As String, changed As Boolean, itm As Object, n As Long
+    Dim C_EID As Long, C_MOD As Long, C_CATS As Long
+    On Error GoTo Done
+    Set tbl = fld.GetTable
+    tbl.Columns.RemoveAll
+    C_EID = AddCol(tbl, "EntryID")
+    C_MOD = AddCol(tbl, "LastModificationTime")
+    C_CATS = AddCol(tbl, "Categories")
+    If C_EID < 0 Or C_MOD < 0 Or C_CATS < 0 Then GoTo Done
+    tbl.Sort "[LastModificationTime]", True
+    Do Until tbl.EndOfTable
+        arr = tbl.GetArray(TABLE_CHUNK)
+        If Not IsArray(arr) Then Exit Do
+        For r = LBound(arr, 1) To UBound(arr, 1)
+            t = VDate(AV(arr, r, C_MOD))
+            If t <> 0 And t < cutoff Then GoTo Done
+            cats = VStr(AV(arr, r, C_CATS))
+            If Len(cats) > 0 Then
+                parts = Split(Replace(cats, ";", ","), ",")
+                result = ""
+                changed = False
+                For i = LBound(parts) To UBound(parts)
+                    If IsGarbled(Trim$(parts(i)), targets) Then
+                        changed = True
+                    ElseIf Len(Trim$(parts(i))) > 0 Then
+                        If Len(result) > 0 Then result = result & ", "
+                        result = result & Trim$(parts(i))
+                    End If
+                Next i
+                If changed Then
+                    Set itm = GetItemSafe(VStr(AV(arr, r, C_EID)))
+                    If Not itm Is Nothing Then
+                        itm.Categories = result
+                        itm.Save
+                        n = n + 1
+                    End If
+                End If
+            End If
+        Next r
+        DoEvents
+    Loop
+Done:
+    CleanFolderGarbled = n
+End Function
 
 ' () : PC (CP949)
 Private Function IsGarbled(ByVal nm As String, ByVal targets As Object) As Boolean

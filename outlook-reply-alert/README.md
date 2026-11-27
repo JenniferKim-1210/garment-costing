@@ -121,7 +121,9 @@ Outlook → **파일 > 옵션 > 보안 센터 > 보안 센터 설정 > 매크로
   - 파일 위치: `%APPDATA%\ReplyAlert\names.txt`
 - 이 메일들은 **참조(CC)나 단체 메일이어도 `내 답장 필요` 에 들어갑니다.** (나를 불렀으니 답해야 할 가능성이 높음)
 - 뉴스레터처럼 자동 발송된 메일은 "Dear Jennifer" 로 시작해도 제외합니다.
-- 내가 회신하면 목록에서 빠집니다. 도착할 때 알림도 받으려면 `ATTENTION_TOAST = True`
+- 내가 회신한 메일도 계속 보라색으로 표시합니다. 회신하면 빼고 싶으면 `CLEAR_ATTENTION_WHEN_I_REPLY = True`
+- 설치하기 전에 받은 메일은 `ScanRecentInbox` 를 실행해야 표시됩니다. 실행하면 며칠 전까지 볼지 물어봅니다 (예: 30, 60).
+- 도착할 때 알림도 받으려면 `ATTENTION_TOAST = True`
 
 ### 🔵 내 답장 필요
 받은 지 **4시간이 지났는데 아직 회신/전달하지 않은** 메일이 모입니다. (최근 7일, 받은 편지함. 하위 폴더도 보려면 `TODO_INCLUDE_SUBFOLDERS = True`)
@@ -143,6 +145,7 @@ Outlook → **파일 > 옵션 > 보안 센터 > 보안 센터 설정 > 매크로
 - 최근 30일 동안 보낸 메일 중 **보낸 지 3일이 지났는데** 그 스레드에 **다른 사람의 메일이 하나도 오지 않은** 메일이 모입니다.
 - 같은 스레드에 내가 독촉 메일을 다시 보냈다면 **가장 마지막 메일 하나만** 남습니다.
 - 상대가 답하면 즉시, 동료가 대신 답한 경우는 다음 검사 때 빠집니다.
+- 회신이 규칙으로 **하위 폴더에 들어간 경우**도 Outlook 대화(스레드) 기능으로 모든 폴더를 확인해서 빠집니다.
 - 목록에서 메일을 열어 **전달 / 다시 보내기**로 바로 독촉하면 편합니다.
 
 ### ✅ 완료 처리 (`MarkDone`)
@@ -180,7 +183,8 @@ Outlook 기본 기능인 **플래그 > 완료로 표시** 를 해도 `내 답장
 | `ShowNoReplyList` | 답장 대기 목록 열기 |
 | `CheckMyTodo` | 내 답장 필요 지금 다시 검사하고 목록 열기 |
 | `CheckNoReply` | 답장 대기 지금 다시 검사하고 목록 열기 |
-| `ScanRecentInbox` | 최근 14일 받은 메일에서 내 메일 회신 / 내 앞으로 온 메일 다시 찾기 |
+| `ScanRecentInbox` | 최근 받은 메일에서 내 메일 회신 / 내 앞으로 온 메일 다시 찾기 (며칠 전까지 볼지 물어봄) |
+| `FixBrokenCategories` | 예전 버전이 남긴 깨진 범주(`³» ¸ÞÀÏ` 같은 글자) 지우기 |
 | `RecheckReplyMarks` | `내 메일 회신` 표시를 다시 확인해서 잘못 붙은 것을 뺌 |
 | `TestSelectedMail` | 선택한 메일이 왜 목록에 들어갔는지/안 들어갔는지 진단 |
 | `TestToast` | 알림 테스트 (메일을 선택하고 실행하면 클릭 시 그 메일이 열림) |
@@ -207,9 +211,10 @@ Outlook 기본 기능인 **플래그 > 완료로 표시** 를 해도 `내 답장
 | `ATTENTION_ENABLED` | `True` | 기능 사용 |
 | (이름 목록) | `Jennifer`, `김나현`, `김 나현` | `EditMyNames` 매크로로 메모장에서 수정 (한 줄에 하나) |
 | `ATTENTION_EXTRA_NAMES` | `""` | 영문 이름을 설정에서 바로 추가할 때 (예: `"Jenny;Ms. Kim"`) |
-| `ATTENTION_LINES` | `5` | 본문 앞에서 몇 줄까지 볼지 |
+| `ATTENTION_LINES` | `8` | 본문 앞에서 몇 줄까지 볼지 |
+| `ATTENTION_AUTO_NAMES` | `True` | Outlook 에 등록된 내 이름도 자동으로 사용 (예: `Na Hyun`, `Nahyun`, `Na-Hyun`, `Ms. Kim`) |
 | `ATTENTION_TOAST` | `False` | `True` 면 도착 시 Windows 알림 |
-| `CLEAR_ATTENTION_WHEN_I_REPLY` | `True` | 내가 회신하면 목록에서 빠짐 |
+| `CLEAR_ATTENTION_WHEN_I_REPLY` | `False` | `True` 면 내가 회신한 메일은 목록에서 뺌 (기본: 회신해도 계속 표시) |
 
 **내 답장 필요**
 
