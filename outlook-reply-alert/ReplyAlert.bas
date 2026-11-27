@@ -2,12 +2,13 @@ Attribute VB_Name = "ReplyAlert"
 '==========================================================================
 '  메일 할 일 알리미 (Outlook VBA)
 '
-'  목록 3개 (모두 즐겨찾기에 자동 추가되는 검색 폴더)
+'  목록 4개 (모두 즐겨찾기에 자동 추가되는 검색 폴더)
 '    [내 메일 회신] 빨강 : 내가 보낸 메일에 회신이 온 것       -> 도착 즉시 Windows 알림
+'    [내 앞으로 온 메일] 보라 : 본문이 "Hi Jennifer", "김나현 차장님" 처럼 내 이름을 부르며 시작하는 것
 '    [내 답장 필요] 파랑 : 나한테 왔는데 아직 회신/확인 안 한 것 -> 정해진 시각(9시, 14시)에 리마인드
 '    [답장 대기]    주황 : 내가 보냈는데 N일째 답이 없는 것     -> 하루 한 번 리마인드
 '
-'  [완료 처리] MarkDone : 선택한 메일을 세 목록에서 모두 빼고 다시 들어오지 않게 함
+'  [완료 처리] MarkDone : 선택한 메일을 모든 목록에서 빼고 다시 들어오지 않게 함
 '  메일에 회신/전달하면 [내 답장 필요] 에서 자동으로 빠짐
 '  상대가 답장하면 [답장 대기] 에서 자동으로 빠짐
 '
@@ -32,11 +33,12 @@ Attribute VB_Name = "ReplyAlert"
 '  수동 실행 매크로 (Alt+F8)
 '    MarkDone           : 선택한 메일 완료 처리 (모든 목록에서 빠짐)  <- 리본 버튼으로 추가 추천
 '    ShowReplyList      : [내 메일 회신] 목록 열기
+'    ShowAttentionList  : [내 앞으로 온 메일] 목록 열기
 '    ShowMyTodoList     : [내 답장 필요] 목록 열기
 '    ShowNoReplyList    : [답장 대기] 목록 열기
 '    CheckMyTodo        : [내 답장 필요] 지금 다시 검사
 '    CheckNoReply       : [답장 대기] 지금 다시 검사
-'    ScanRecentInbox    : 최근 받은 메일에서 내 메일 회신 다시 찾기 (기본 14일)
+'    ScanRecentInbox    : 최근 받은 메일에서 내 메일 회신 / 내 앞으로 온 메일 다시 찾기 (기본 14일)
 '    TestSelectedMail   : 선택한 메일의 판단 근거 진단
 '    TestToast          : Windows 알림 테스트 (메일을 선택하고 실행하면 클릭 시 그 메일이 열림)
 '==========================================================================
@@ -51,13 +53,27 @@ Private Const CLEAR_REPLY_MARK_WHEN_I_REPLY As Boolean = True ' 그 회신에 내가 �
 Private Const SCAN_DAYS As Long = 14                ' ScanRecentInbox 검사 기간(일)
 Private Const STARTUP_SCAN_DAYS As Long = 1         ' Outlook 시작 시 검사 기간(일), 0 = 안 함
 
+' [내 앞으로 온 메일] - 본문이 내 이름을 부르며 시작하는 메일
+Private Const ATTENTION_ENABLED As Boolean = True
+Public Const ATTENTION_CATEGORY As String = "내 앞으로 온 메일"  ' 범주 (보라색)
+Public Const ATTENTION_LIST_NAME As String = "내 앞으로 온 메일" ' 목록 폴더 이름
+' 내 이름 (세미콜론으로 구분, 대소문자 무시). 인사말 뒤나 줄 맨 앞에 이 이름이 오면 표시
+'   예) "Hi Jennifer", "Dear Jennifer,", "Jennifer, please..", "김나현 차장님", "안녕하세요 김 나현 차장님"
+Private Const ATTENTION_NAMES As String = "Jennifer;김나현;김 나현"
+Private Const ATTENTION_LINES As Long = 5           ' 본문 앞에서 몇 줄까지 볼지 (외부메일 경고 문구 등 고려)
+Private Const ATTENTION_TOAST As Boolean = False    ' True = 도착 시 Windows 알림도 띄움
+Private Const CLEAR_ATTENTION_WHEN_I_REPLY As Boolean = True ' 내가 회신하면 목록에서 빠짐
+Private Const ATTENTION_GREETINGS As String = _
+    "hi;hello;hey;dear;good morning;good afternoon;good evening;morning;greetings;attn;attention;to;" & _
+    "안녕하세요;안녕하십니까;수신;받는 사람;존경하는"
+
 ' [내 답장 필요] - 나한테 왔는데 아직 회신/확인 안 한 메일
 Private Const TODO_ENABLED As Boolean = True
 Public Const TODO_CATEGORY As String = "내 답장 필요"   ' 범주 (파란색)
 Public Const TODO_LIST_NAME As String = "내 답장 필요"  ' 목록 폴더 이름
 Private Const TODO_MIN_HOURS As Long = 4            ' 받은 지 몇 시간 지나도 회신 안 했으면 표시
 Private Const TODO_LOOKBACK_DAYS As Long = 7        ' 최근 며칠 동안 받은 메일까지 (지나면 목록에서 빠짐)
-Private Const TODO_ONLY_TO_ME As Boolean = True     ' True = 받는 사람(To)에 내가 있는 메일만 (참조/CC 제외)
+Private Const TODO_ONLY_TO_ME As Boolean = True     ' True = 받는 사람(To)에 내가 있는 메일만 (참조/CC 제외, 단 내 이름을 부른 메일은 포함)
 Private Const TODO_MAX_RECIPIENTS As Long = 10      ' 받는 사람이 이보다 많은 단체 메일은 제외
 Private Const TODO_INCLUDE_SUBFOLDERS As Boolean = True ' 받은 편지함의 하위 폴더도 검사
 Private Const TODO_REFRESH_MINUTES As Long = 60     ' 목록 자동 갱신 간격(분, 새 메일이 올 때 확인)
@@ -102,7 +118,7 @@ Private Const VERB_FORWARD As Long = 104
 Private Const FLAG_COMPLETE As Long = 1
 
 Private Const TOAST_APP_ID As String = "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe"
-Private Const URI_SCHEME As String = "replyalert"   ' replyalert:open/<EntryID>, :list, :todo, :followup
+Private Const URI_SCHEME As String = "replyalert"   ' replyalert:open/<EntryID>, :list, :attn, :todo, :followup
 Private Const DONE_PROP As String = "ReplyAlertNoFollowup" ' 완료 처리 표시 (메일에 숨은 속성으로 저장)
 Private Const SETTINGS_APP As String = "ReplyAlert"
 
@@ -142,6 +158,7 @@ Public Sub OnStartup()
     If CLICK_TO_OPEN Then InstallClickHandler
     If CREATE_LISTS Then
         EnsureSearchFolder LIST_FOLDER_NAME, olFolderInbox, CATEGORY_NAME, olCategoryColorRed
+        If ATTENTION_ENABLED Then EnsureSearchFolder ATTENTION_LIST_NAME, olFolderInbox, ATTENTION_CATEGORY, olCategoryColorPurple
         If TODO_ENABLED Then EnsureSearchFolder TODO_LIST_NAME, olFolderInbox, TODO_CATEGORY, olCategoryColorBlue
         If FOLLOWUP_ENABLED Then EnsureSearchFolder FOLLOWUP_LIST_NAME, olFolderSentMail, FOLLOWUP_CATEGORY, olCategoryColorOrange
     End If
@@ -180,6 +197,10 @@ Public Sub OnItemSent(ByVal sentItem As Object)
                 If CLEAR_REPLY_MARK_WHEN_I_REPLY And CatListHas(cats, CATEGORY_NAME) Then
                     RemoveCategoryName it, CATEGORY_NAME, True
                 End If
+                ' 내 앞으로 온 메일에 답했으면 [내 앞으로 온 메일] 에서 제거
+                If CLEAR_ATTENTION_WHEN_I_REPLY And CatListHas(cats, ATTENTION_CATEGORY) Then
+                    RemoveCategoryName it, ATTENTION_CATEGORY, True
+                End If
                 ' 같은 스레드의 예전 내 메일은 새로 보낸 메일로 대체 -> [답장 대기] 에서 제거
                 If CatListHas(cats, FOLLOWUP_CATEGORY) Then
                     If IsFromMe(it) Then RemoveCategoryName it, FOLLOWUP_CATEGORY, True
@@ -205,6 +226,7 @@ Public Sub MarkDone()
             If up Is Nothing Then Set up = itm.UserProperties.Add(DONE_PROP, olYesNo, False)
             up.Value = True
             RemoveCategoryName itm, CATEGORY_NAME, False
+            RemoveCategoryName itm, ATTENTION_CATEGORY, False
             RemoveCategoryName itm, TODO_CATEGORY, False
             RemoveCategoryName itm, FOLLOWUP_CATEGORY, False
             itm.Save
@@ -226,6 +248,10 @@ End Sub
 
 Public Sub ShowReplyList()
     OpenSearchFolder LIST_FOLDER_NAME, olFolderInbox, CATEGORY_NAME, olCategoryColorRed
+End Sub
+
+Public Sub ShowAttentionList()
+    OpenSearchFolder ATTENTION_LIST_NAME, olFolderInbox, ATTENTION_CATEGORY, olCategoryColorPurple
 End Sub
 
 Public Sub ShowMyTodoList()
@@ -264,9 +290,11 @@ Public Sub CheckNoReply()
 End Sub
 
 Public Sub ScanRecentInbox()
-    Dim n As Long
-    n = ScanInbox(SCAN_DAYS)
-    MsgBox "최근 " & SCAN_DAYS & "일 받은 메일 중 내 메일에 대한 회신 " & n & "건을 새로 표시했습니다." & vbCrLf & _
+    Dim n As Long, attn As Long
+    n = ScanInbox(SCAN_DAYS, attn)
+    MsgBox "최근 " & SCAN_DAYS & "일 받은 메일에서 새로 표시했습니다." & vbCrLf & vbCrLf & _
+           "  내 메일에 대한 회신: " & n & "건" & vbCrLf & _
+           "  내 앞으로 온 메일: " & attn & "건" & vbCrLf & vbCrLf & _
            "(이미 표시된 메일은 제외)", vbInformation, "메일 알리미"
     If CREATE_LISTS Then ShowReplyList
 End Sub
@@ -330,6 +358,12 @@ Public Sub TestSelectedMail()
             msg = msg & "==> 내 메일에 대한 회신: 아님" & vbCrLf
         Else
             msg = msg & "==> 내 메일에 대한 회신: 맞음 (" & mine.Subject & " / " & mine.SentOn & ")" & vbCrLf
+        End If
+        stText = AttentionMatch(itm)
+        If Len(stText) = 0 Then
+            msg = msg & "==> 내 앞으로 온 메일: 아님 (본문 앞 " & ATTENTION_LINES & "줄에 내 이름을 부르는 인사가 없음)" & vbCrLf
+        Else
+            msg = msg & "==> 내 앞으로 온 메일: 맞음 [" & Left$(stText, 60) & "]" & vbCrLf
         End If
         reason = TodoReason(itm)
         If Len(reason) = 0 Then
@@ -415,8 +449,9 @@ End Function
 '==========================================================================
 '  [내 메일 회신] 핵심 로직
 '==========================================================================
-Private Function ScanInbox(ByVal days As Long) As Long
-    Dim inbox As Object, its As Object, itm As Object
+' 새로 회신 표시한 개수 반환, attnCount = 새로 [내 앞으로 온 메일] 표시한 개수
+Private Function ScanInbox(ByVal days As Long, Optional ByRef attnCount As Long) As Long
+    Dim inbox As Object, its As Object, itm As Object, attnMarked As Boolean
     Dim cutoff As Date, rcv As Date, n As Long, total As Long
 
     cutoff = Now - days
@@ -427,32 +462,52 @@ Private Function ScanInbox(ByVal days As Long) As Long
     For Each itm In its
         rcv = GetReceived(itm)
         If rcv <> 0 And rcv < cutoff Then Exit For
-        If ProcessMail(itm, False) Then n = n + 1
+        If ProcessMail(itm, False, attnMarked) Then n = n + 1
+        If attnMarked Then attnCount = attnCount + 1
         total = total + 1
         If total Mod 25 = 0 Then DoEvents
     Next itm
     ScanInbox = n
 End Function
 
-' 새로 표시했으면 True
-Private Function ProcessMail(ByVal itm As Object, ByVal notify As Boolean) As Boolean
+' 새로 [내 메일 회신] 표시했으면 True. attnMarked = 이번에 [내 앞으로 온 메일] 표시했는지
+Private Function ProcessMail(ByVal itm As Object, ByVal notify As Boolean, Optional ByRef attnMarked As Boolean) As Boolean
     Dim mine As Object
     On Error GoTo Fail
+    attnMarked = False
     If itm.Class <> olMail Then Exit Function
-    If CatListHas(itm.Categories, CATEGORY_NAME) Then Exit Function
     If IsDone(itm) Then Exit Function
     If SKIP_AUTO_REPLIES Then
         If IsAutoReply(itm) Then Exit Function
     End If
     If IsFromMe(itm) Then Exit Function
 
-    Set mine = FindRepliedMine(itm)
-    If mine Is Nothing Then Exit Function
+    ' [내 앞으로 온 메일] 본문이 내 이름을 부르며 시작하는지
+    If ATTENTION_ENABLED Then
+        If Not CatListHas(itm.Categories, ATTENTION_CATEGORY) Then
+            If Not IsBulkMail(itm) Then
+                If Len(AttentionMatch(itm)) > 0 Then
+                    EnsureCategory ATTENTION_CATEGORY, olCategoryColorPurple
+                    AddCategoryName itm, ATTENTION_CATEGORY
+                    attnMarked = True
+                End If
+            End If
+        End If
+    End If
 
-    MarkMail itm
-    If FOLLOWUP_ENABLED Then RemoveCategoryName mine, FOLLOWUP_CATEGORY, True   ' 답장 왔으니 대기 목록에서 제거
-    If notify Then NotifyReply itm
-    ProcessMail = True
+    ' [내 메일 회신] 내가 보낸 메일에 대한 회신인지
+    If Not CatListHas(itm.Categories, CATEGORY_NAME) Then
+        Set mine = FindRepliedMine(itm)
+        If Not mine Is Nothing Then
+            MarkMail itm
+            If FOLLOWUP_ENABLED Then RemoveCategoryName mine, FOLLOWUP_CATEGORY, True   ' 답장 왔으니 대기 목록에서 제거
+            If notify Then NotifyReply itm
+            ProcessMail = True
+        End If
+    End If
+
+    ' 회신 알림을 이미 띄웠으면 중복 알림 안 함
+    If notify And attnMarked And Not ProcessMail And ATTENTION_TOAST Then NotifyAttention itm
     Exit Function
 Fail:
     Debug.Print "ReplyAlert.ProcessMail 오류: " & Err.Description
@@ -519,6 +574,147 @@ Private Function FindSentByMessageId(ByVal msgId As String) As Object
     If res.Count > 0 Then Set FindSentByMessageId = res.GetFirst
 Done:
 End Function
+
+
+'==========================================================================
+'  [내 앞으로 온 메일] 핵심 로직
+'==========================================================================
+' 본문 앞부분에서 내 이름을 부르는 줄을 찾아 반환 (없으면 "")
+Private Function AttentionMatch(ByVal mail As Object) As String
+    Dim body As String, lines() As String, i As Long, n As Long, ln As String
+    On Error GoTo Done
+    If Len(Trim$(ATTENTION_NAMES)) = 0 Then Exit Function
+    body = Left$(mail.Body, 3000)
+    body = Replace(body, ChrW(160), " ")       ' 줄바꿈 없는 공백
+    body = Replace(body, ChrW(8203), "")       ' 폭 없는 공백
+    body = Replace(body, ChrW(65279), "")
+    body = Replace(body, vbTab, " ")
+    lines = Split(body, vbLf)
+    For i = LBound(lines) To UBound(lines)
+        ln = Trim$(Replace(lines(i), vbCr, ""))
+        If Len(ln) > 0 Then
+            n = n + 1
+            If LineAddressesMe(ln) Then
+                AttentionMatch = ln
+                Exit Function
+            End If
+            If n >= ATTENTION_LINES Then Exit For
+        End If
+    Next i
+Done:
+End Function
+
+' 한 줄이 나를 부르는 인사인지
+'   - 인사말(Hi, Dear, 안녕하세요 ...)을 떼고 나서 줄이 내 이름으로 시작하면 O   "Hi Jennifer," "김나현 차장님,"
+'   - 인사말로 시작하는 짧은 줄 안에 내 이름이 있으면 O                          "Hi Tom and Jennifer,"
+Private Function LineAddressesMe(ByVal ln As String) As Boolean
+    Dim s As String, hadGreeting As Boolean, changed As Boolean
+    Dim greetings() As String, names() As String, i As Long, g As String, nm As String
+
+    hadGreeting = (Left$(LTrim$(ln), 1) = "@")      ' @Jennifer 처럼 멘션
+    s = StripLead(LCase$(ln))
+    greetings = Split(ATTENTION_GREETINGS, ";")
+    Do
+        changed = False
+        For i = LBound(greetings) To UBound(greetings)
+            g = Trim$(greetings(i))
+            If Len(g) > 0 And Left$(s, Len(g)) = g Then
+                If NameBoundary(g, Mid$(s, Len(g) + 1, 1)) Then
+                    s = StripLead(Mid$(s, Len(g) + 1))
+                    hadGreeting = True
+                    changed = True
+                    Exit For
+                End If
+            End If
+        Next i
+    Loop While changed And Len(s) > 0
+
+    names = Split(ATTENTION_NAMES, ";")
+    For i = LBound(names) To UBound(names)
+        nm = LCase$(Trim$(names(i)))
+        If Len(nm) > 0 Then
+            If Left$(s, Len(nm)) = nm Then
+                If NameBoundary(nm, Mid$(s, Len(nm) + 1, 1)) Then
+                    ' 인사말 없이 이름으로 시작하면, 부르는 말인지 확인
+                    ' O "Jennifer, please.." "김나현 차장님," "김나현 차장님 안녕하세요"
+                    ' X "Jennifer will send.." "김나현 차장님이 보내주신.."
+                    If hadGreeting Or AddressTail(Mid$(s, Len(nm) + 1)) Then
+                        LineAddressesMe = True
+                        Exit Function
+                    End If
+                End If
+            End If
+            If hadGreeting And Len(ln) <= 80 Then
+                If ContainsName(s, nm) Then
+                    LineAddressesMe = True
+                    Exit Function
+                End If
+            End If
+        End If
+    Next i
+End Function
+
+' 이름 뒤가 부르는 말의 끝인지 (호칭 "차장님", "님께" 뒤에 쉼표/줄끝/안녕하세요)
+Private Function AddressTail(ByVal r As String) As Boolean
+    Dim p As Long
+    r = LTrim$(r)
+    p = InStr(1, r, "님", vbBinaryCompare)
+    If p > 0 And p <= 6 Then
+        r = LTrim$(Mid$(r, p + 1))
+        If Left$(r, 1) = "께" And Mid$(r, 2, 1) <> "서" Then r = LTrim$(Mid$(r, 2))
+    End If
+    If Len(r) = 0 Then AddressTail = True: Exit Function
+    If InStr(1, ",.!:;~-)" & ChrW(65292), Left$(r, 1), vbBinaryCompare) > 0 Then AddressTail = True: Exit Function
+    If Left$(r, 2) = "안녕" Then AddressTail = True
+End Function
+
+' 앞쪽 공백/문장부호/@ 제거
+Private Function StripLead(ByVal s As String) As String
+    Do While Len(s) > 0
+        If InStr(1, " ,.:;-!@~*>" & ChrW(183) & ChrW(65292), Left$(s, 1), vbBinaryCompare) > 0 Then
+            s = Mid$(s, 2)
+        Else
+            Exit Do
+        End If
+    Loop
+    StripLead = s
+End Function
+
+' 영문 단어 뒤에 영문/숫자가 바로 붙어 있으면 다른 단어 (예: "to" vs "today"). 한글은 호칭이 바로 붙으므로 허용
+Private Function NameBoundary(ByVal word As String, ByVal nextChar As String) As Boolean
+    If Len(nextChar) = 0 Then NameBoundary = True: Exit Function
+    If Not (LCase$(Right$(word, 1)) Like "[a-z0-9.]") Then NameBoundary = True: Exit Function
+    NameBoundary = Not (LCase$(nextChar) Like "[a-z0-9]")
+End Function
+
+Private Function ContainsName(ByVal s As String, ByVal nm As String) As Boolean
+    Dim p As Long, prevChar As String
+    p = InStr(1, s, nm, vbBinaryCompare)
+    Do While p > 0
+        If p > 1 Then prevChar = Mid$(s, p - 1, 1) Else prevChar = ""
+        If NameBoundary(nm, Mid$(s, p + Len(nm), 1)) And Not (prevChar Like "[a-z0-9]") Then
+            ContainsName = True
+            Exit Function
+        End If
+        p = InStr(p + 1, s, nm, vbBinaryCompare)
+    Loop
+End Function
+
+Private Function IsAttention(ByVal itm As Object) As Boolean
+    If CatListHas(SafeCategories(itm), ATTENTION_CATEGORY) Then
+        IsAttention = True
+    ElseIf ATTENTION_ENABLED Then
+        IsAttention = (Len(AttentionMatch(itm)) > 0)
+    End If
+End Function
+
+Private Sub NotifyAttention(ByVal mail As Object)
+    Dim openUri As String
+    On Error Resume Next
+    openUri = URI_SCHEME & ":open/" & mail.EntryID
+    ShowToast "내 앞으로 온 메일", mail.SenderName, mail.Subject, openUri, _
+              "메일 열기|" & openUri & ";목록 보기|" & URI_SCHEME & ":attn"
+End Sub
 
 
 '==========================================================================
@@ -625,7 +821,7 @@ End Function
 
 ' 받은 메일이 [내 답장 필요] 인지. 필요하면 "" , 아니면 이유를 반환
 Private Function TodoReason(ByVal itm As Object) As String
-    Dim lv As Long, n As Long
+    Dim lv As Long, n As Long, attn As Boolean
     On Error GoTo Fail
     If itm.Class <> olMail Then TodoReason = "일반 메일 아님": Exit Function
     If Left$(LCase$(itm.MessageClass), 14) = "ipm.note.rules" Then TodoReason = "자동 메일": Exit Function
@@ -637,13 +833,16 @@ Private Function TodoReason(ByVal itm As Object) As String
     If lv = VERB_FORWARD Then TodoReason = "이미 전달함": Exit Function
     If GetPropLong(itm.PropertyAccessor, PR_FLAG_STATUS) = FLAG_COMPLETE Then TodoReason = "플래그 완료": Exit Function
 
-    If TODO_ONLY_TO_ME Then
-        If Not IsToMe(itm) Then TodoReason = "받는 사람(To)에 내가 없음 (참조/단체 주소)": Exit Function
-    End If
     If IsAutoReply(itm) Then TodoReason = "자동회신": Exit Function
     If IsBulkMail(itm) Then TodoReason = "자동 발송/단체 메일": Exit Function
+
+    ' 내 이름을 부른 메일은 참조(CC)나 단체 메일이어도 포함
+    attn = IsAttention(itm)
+    If TODO_ONLY_TO_ME And Not attn Then
+        If Not IsToMe(itm) Then TodoReason = "받는 사람(To)에 내가 없음 (참조/단체 주소)": Exit Function
+    End If
     n = itm.Recipients.Count
-    If n > TODO_MAX_RECIPIENTS Then TodoReason = "받는 사람이 많은 메일 (" & n & "명)": Exit Function
+    If n > TODO_MAX_RECIPIENTS And Not attn Then TodoReason = "받는 사람이 많은 메일 (" & n & "명)": Exit Function
     If IRepliedInThread(itm) Then TodoReason = "같은 스레드에 내가 나중에 보낸 메일 있음": Exit Function
     TodoReason = ""
     Exit Function
@@ -1073,7 +1272,7 @@ End Sub
 Private Sub TryPendingFavorites()
     Dim names As Variant, i As Long
     On Error Resume Next
-    names = Array(LIST_FOLDER_NAME, TODO_LIST_NAME, FOLLOWUP_LIST_NAME)
+    names = Array(LIST_FOLDER_NAME, ATTENTION_LIST_NAME, TODO_LIST_NAME, FOLLOWUP_LIST_NAME)
     For i = LBound(names) To UBound(names)
         If GetSetting(SETTINGS_APP, "Favorites", CStr(names(i)), "") = "pending" Then
             If AddToFavorites(FindSearchFolder(CStr(names(i)))) Then
@@ -1189,6 +1388,7 @@ Private Function HandlerScript() As String
         "' 메일을 못 찾았거나(다른 폴더로 옮김 등) 목록 버튼이면 목록 폴더 열기" & vbCrLf & _
         "If Not found Then" & vbCrLf & _
         "  target = ~<<LIST>>~" & vbCrLf & _
+        "  If LCase(uri) = ~attn~ Then target = ~<<ATTN>>~" & vbCrLf & _
         "  If LCase(uri) = ~todo~ Then target = ~<<TODO>>~" & vbCrLf & _
         "  If LCase(uri) = ~followup~ Then target = ~<<FOLLOWUP>>~" & vbCrLf & _
         "  For Each f In ns.GetDefaultFolder(6).Store.GetSearchFolders" & vbCrLf & _
@@ -1208,6 +1408,7 @@ Private Function HandlerScript() As String
     s = Replace(s, "<<SCHEME>>", URI_SCHEME)
     s = Replace(s, "<<LEN>>", CStr(Len(URI_SCHEME) + 1))
     s = Replace(s, "<<LIST>>", Replace(LIST_FOLDER_NAME, "~", ""))
+    s = Replace(s, "<<ATTN>>", Replace(ATTENTION_LIST_NAME, "~", ""))
     s = Replace(s, "<<TODO>>", Replace(TODO_LIST_NAME, "~", ""))
     s = Replace(s, "<<FOLLOWUP>>", Replace(FOLLOWUP_LIST_NAME, "~", ""))
     HandlerScript = Replace(s, "~", Chr$(34))
