@@ -34,8 +34,11 @@ Option Explicit
 
 '============================== SETTINGS ==============================
 ' [Reply to my mail] (red)
-Private Const MATCH_WHOLE_THREAD As Boolean = False ' True = also replies to others' mail in a thread I wrote in
-Private Const CLEAR_REPLY_MARK_WHEN_I_REPLY As Boolean = True ' remove the mark after I reply to it
+' True  = every mail I receive in a conversation (thread) where I sent mail earlier ("mail I exchange")
+' False = only direct replies to my mail (and mid-thread replies that put me in To)
+Private Const REPLY_THREAD_MODE As Boolean = True
+Private Const MATCH_WHOLE_THREAD As Boolean = False ' (direct mode only) also use the References header
+Private Const CLEAR_REPLY_MARK_WHEN_I_REPLY As Boolean = False ' True = remove the mark after I reply to it
 Private Const REPLY_TRACK_DAYS As Long = 60         ' alert replies to mail I sent in the last N days
 Private Const SCAN_DAYS As Long = 14                ' ScanRecentInbox range (days)
 Private Const STARTUP_SCAN_DAYS As Long = 1         ' check mail that arrived while Outlook was closed (days), 0 = off
@@ -142,6 +145,7 @@ Private m_SentIdsRefreshAt As Date
 Private m_SentIds As Object        ' 내가 보낸 메일 ID(소문자) -> EntryID
 Private m_MyLastTime As Object     ' 대화 ID -> 내가 마지막으로 보낸 시각
 Private m_MyLastId As Object       ' 대화 ID -> 내가 마지막으로 보낸 메일 EntryID
+Private m_MyFirstTime As Object    ' 대화 ID -> 내가 처음 보낸 시각
 Private m_OtherLastTime As Object  ' 대화 ID -> 다른 사람 메일을 마지막으로 받은 시각
 Private m_RepliedIds As Object     ' 누군가 답장한 메일 ID(소문자) (받은 메일의 In-Reply-To)
 Private m_SmtpCache As Object      ' Exchange 주소 -> SMTP 주소
@@ -697,6 +701,7 @@ Private Sub EnsureDicts()
     If m_SentIds Is Nothing Then Set m_SentIds = NewDict()
     If m_MyLastTime Is Nothing Then Set m_MyLastTime = NewDict()
     If m_MyLastId Is Nothing Then Set m_MyLastId = NewDict()
+    If m_MyFirstTime Is Nothing Then Set m_MyFirstTime = NewDict()
     If m_OtherLastTime Is Nothing Then Set m_OtherLastTime = NewDict()
     If m_RepliedIds Is Nothing Then Set m_RepliedIds = NewDict()
     If m_SmtpCache Is Nothing Then Set m_SmtpCache = NewDict()
@@ -722,6 +727,7 @@ Private Sub BuildMaps()
     Set m_SentIds = NewDict()
     Set m_MyLastTime = NewDict()
     Set m_MyLastId = NewDict()
+    Set m_MyFirstTime = NewDict()
     Set m_OtherLastTime = NewDict()
     Set m_RepliedIds = NewDict()
 
@@ -825,6 +831,11 @@ End Sub
 
 Private Sub NoteMine(ByVal conv As String, ByVal t As Date, ByVal eid As String)
     If Len(conv) = 0 Or t = 0 Then Exit Sub
+    If Not m_MyFirstTime.Exists(conv) Then
+        m_MyFirstTime(conv) = t
+    ElseIf m_MyFirstTime(conv) > t Then
+        m_MyFirstTime(conv) = t
+    End If
     If m_MyLastTime.Exists(conv) Then
         If m_MyLastTime(conv) >= t Then Exit Sub
     End If
@@ -902,7 +913,7 @@ Private Function ProcessMail(ByVal itm As Object, ByVal notify As Boolean, Optio
     End If
 
     ' [내 메일 회신] 내가 보낸 메일에 대한 회신인지 (이미 답한 메일은 제외)
-    If Not handled And Not CatListHas(itm.Categories, CATEGORY_NAME) Then
+    If (Not handled Or Not CLEAR_REPLY_MARK_WHEN_I_REPLY) And Not CatListHas(itm.Categories, CATEGORY_NAME) Then
         Set mine = FindRepliedMine(itm)
         If Not mine Is Nothing Then
             MarkMail itm
@@ -1010,6 +1021,20 @@ Private Function FindRepliedMine(ByVal mail As Object) As Object
                 Exit For
             End If
         Next i
+    End If
+
+    ' 2) [스레드 모드] 내가 먼저 메일을 보낸 스레드에서 받은 메일이면 (주고받는 메일)
+    If REPLY_THREAD_MODE Then
+        conv = SafeConvId(mail)
+        If Len(conv) > 0 Then
+            If m_MyFirstTime.Exists(conv) Then
+                If m_MyFirstTime(conv) < GetReceived(mail) Then
+                    Set FindRepliedMine = GetItemSafe(m_MyLastId(conv))
+                    If FindRepliedMine Is Nothing Then Set FindRepliedMine = mail   ' 내 메일을 못 열어도 표시는 함
+                End If
+            End If
+        End If
+        GoTo Done
     End If
 
     ' 2) 답장 정보(In-Reply-To)가 없는 메일 (일부 웹메일 등):
