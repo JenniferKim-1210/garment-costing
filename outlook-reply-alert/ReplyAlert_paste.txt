@@ -76,6 +76,7 @@ Private Const SKIP_AUTO_REPLIES As Boolean = True   ' ignore out-of-office repli
 Private Const STARTUP_DELAY_SECONDS As Long = 90    ' do nothing for N seconds after Outlook starts
 Private Const SLICE_SECONDS As Single = 0.4         ' work at most N seconds at a time, continue on the next mail
 Private Const BACKGROUND_INTERVAL_SECONDS As Long = 180 ' update the lists at most once every N seconds (reminders still on time)
+Private Const SUBFOLDER_SWEEP_MINUTES As Long = 30  ' check Inbox subfolders (mail moved by rules) every N minutes, 0 = off
 
 ' My other addresses (aliases), e.g. "a@company.com;b@company.com"
 Private Const EXTRA_MY_ADDRESSES As String = ""
@@ -162,6 +163,10 @@ Private m_FuChecked As Object      ' EntryID -> (FU_*)
 Private m_FuCheckedTime As Object  ' EntryID ->
 Private m_FuIncomplete As Boolean
 Private m_FuDailyPending As Boolean
+Private m_SubFolders As Collection
+Private m_SubSweepIdx As Long
+Private m_LastSubSweep As Date
+Private m_SweepReplies As Long
 
 
 '==========================================================================
@@ -335,7 +340,12 @@ Public Sub ScanRecentInbox()
     If days < 1 Then Exit Sub
     m_Busy = True
     EnsureMaps True
-    ScanInboxTable days, False, n, attn
+    Dim folders As New Collection, fld As Object
+    folders.Add Application.Session.GetDefaultFolder(olFolderInbox)
+    AddSubFolders Application.Session.GetDefaultFolder(olFolderInbox), folders, 0
+    For Each fld In folders
+        ScanInboxTable days, False, n, attn, fld
+    Next fld
     m_Busy = False
     MsgBoxU U("\uCD5C\uADFC ") & days & U("\uC77C \uBC1B\uC740 \uBA54\uC77C\uC5D0\uC11C \uC0C8\uB85C \uD45C\uC2DC\uD588\uC2B5\uB2C8\uB2E4.") & vbCrLf & vbCrLf & _
            U("  \uB0B4 \uBA54\uC77C\uC5D0 \uB300\uD55C \uD68C\uC2E0: ") & n & U("\uAC74") & vbCrLf & _
@@ -487,6 +497,10 @@ Private Sub RunScheduledChecks()
     End If
     If SliceOver() Then GoTo Done
 
+    ' 2-2) (SUBFOLDER_SWEEP_MINUTES , )
+    If Not SubfolderSweepStep() Then GoTo Done
+    If SliceOver() Then GoTo Done
+
     today = Format$(Date, "yyyy-mm-dd")
 
     ' 3) [ ] + ( )
@@ -579,6 +593,47 @@ Private Function ProcessPendingNew() As Boolean
     End If
     ProcessPendingNew = True
 Done:
+End Function
+
+' 1 ( ). True
+Private Function SubfolderSweepStep() As Boolean
+    Dim reps As Long, attns As Long
+    On Error GoTo Fail
+    If SUBFOLDER_SWEEP_MINUTES <= 0 Then SubfolderSweepStep = True: Exit Function
+    If m_SubSweepIdx = 0 Then
+        If m_LastSubSweep <> 0 Then
+            If DateDiff("n", m_LastSubSweep, Now) < SUBFOLDER_SWEEP_MINUTES Then SubfolderSweepStep = True: Exit Function
+        End If
+        Set m_SubFolders = New Collection
+        AddSubFolders Application.Session.GetDefaultFolder(olFolderInbox), m_SubFolders, 0
+        m_SubSweepIdx = 1
+        m_SweepReplies = 0
+    End If
+    Do While m_SubSweepIdx <= m_SubFolders.Count
+        reps = 0
+        If Not ScanInboxTable(1, True, reps, attns, m_SubFolders(m_SubSweepIdx)) Then
+            m_SweepReplies = m_SweepReplies + reps
+            Exit Function
+        End If
+        m_SweepReplies = m_SweepReplies + reps
+        m_SubSweepIdx = m_SubSweepIdx + 1
+        If SliceOver() Then Exit Function
+    Loop
+    m_SubSweepIdx = 0
+    m_LastSubSweep = Now
+    Set m_SubFolders = Nothing
+    If m_SweepReplies > 0 And SHOW_TOAST Then
+        ShowToast U("\uB0B4 \uBA54\uC77C\uC5D0 \uD68C\uC2E0 ") & m_SweepReplies & U("\uAC74"), _
+                  U("\uBC1B\uC740 \uD3B8\uC9C0\uD568\uC758 \uD558\uC704 \uD3F4\uB354\uC5D0 \uB4E4\uC5B4\uC628 \uD68C\uC2E0\uC785\uB2C8\uB2E4."), _
+                  U("\uD074\uB9AD\uD558\uBA74 \uD68C\uC2E0 \uBAA9\uB85D\uC744 \uC5FD\uB2C8\uB2E4."), URI_SCHEME & ":list"
+    End If
+    m_SweepReplies = 0
+    SubfolderSweepStep = True
+    Exit Function
+Fail:
+    m_SubSweepIdx = 0
+    m_LastSubSweep = Now
+    SubfolderSweepStep = True
 End Function
 
 ' Outlook . True
@@ -852,14 +907,15 @@ End Function
 
 ' (Table) ProcessMail. sliced = . True
 Private Function ScanInboxTable(ByVal days As Long, ByVal sliced As Boolean, _
-                                ByRef replies As Long, ByRef attns As Long) As Boolean
+                                ByRef replies As Long, ByRef attns As Long, Optional ByVal fld As Object) As Boolean
     Dim C_EID As Long, C_CLASS As Long, C_RCV As Long
     Dim tbl As Object, arr As Variant, r As Long, t As Date, cutoff As Date
     Dim eid As String, itm As Object, attn As Boolean, cnt As Long
     On Error GoTo Fail
     EnsureDicts
     cutoff = Now - days
-    Set tbl = Application.Session.GetDefaultFolder(olFolderInbox).GetTable
+    If fld Is Nothing Then Set fld = Application.Session.GetDefaultFolder(olFolderInbox)
+    Set tbl = fld.GetTable
     tbl.Columns.RemoveAll
     C_EID = AddCol(tbl, "EntryID")
     C_CLASS = AddCol(tbl, "MessageClass")
@@ -900,7 +956,7 @@ End Function
 ' " " ( Nothing)
 Private Function FindRepliedMine(ByVal mail As Object) As Object
     Dim pa As Object, inReplyTo As String, refs As String, ids As Collection, i As Long
-    Dim key As String, f As Object, conv As String
+    Dim key As String, f As Object, conv As String, refIds As Collection
     On Error GoTo Done
     EnsureMaps False
     Set pa = mail.PropertyAccessor
@@ -920,6 +976,27 @@ Private Function FindRepliedMine(ByVal mail As Object) As Object
             End If
         End If
     Next i
+
+    ' 1-2) : (References) , (To)
+    ' (: -> To )
+    ' (CC)
+    If Not MATCH_WHOLE_THREAD And ids.Count > 0 Then
+        Set refIds = SplitIds(GetPropStr(pa, PR_INTERNET_REFERENCES))
+        For i = 1 To refIds.Count
+            key = LCase$(refIds(i))
+            If m_SentIds.Exists(key) Then
+                If IsToMe(mail) Then
+                    Set f = GetItemSafe(m_SentIds(key))
+                    If f Is Nothing Then Set f = FindSentByMessageId(key)
+                    If Not f Is Nothing Then
+                        Set FindRepliedMine = f
+                        Exit Function
+                    End If
+                End If
+                Exit For
+            End If
+        Next i
+    End If
 
     ' 2) (In-Reply-To) ( ):
     ' , (To) ,

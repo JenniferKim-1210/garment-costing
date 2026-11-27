@@ -77,6 +77,7 @@ Private Const SKIP_AUTO_REPLIES As Boolean = True   ' ignore out-of-office repli
 Private Const STARTUP_DELAY_SECONDS As Long = 90    ' do nothing for N seconds after Outlook starts
 Private Const SLICE_SECONDS As Single = 0.4         ' work at most N seconds at a time, continue on the next mail
 Private Const BACKGROUND_INTERVAL_SECONDS As Long = 180 ' update the lists at most once every N seconds (reminders still on time)
+Private Const SUBFOLDER_SWEEP_MINUTES As Long = 30  ' check Inbox subfolders (mail moved by rules) every N minutes, 0 = off
 
 ' My other addresses (aliases), e.g. "a@company.com;b@company.com"
 Private Const EXTRA_MY_ADDRESSES As String = ""
@@ -163,6 +164,10 @@ Private m_FuChecked As Object      ' EntryID -> 스레드 직접 확인 결과 (
 Private m_FuCheckedTime As Object  ' EntryID -> 확인한 시각
 Private m_FuIncomplete As Boolean
 Private m_FuDailyPending As Boolean
+Private m_SubFolders As Collection ' 받은 편지함 하위 폴더 (규칙으로 옮겨진 메일 검사용)
+Private m_SubSweepIdx As Long
+Private m_LastSubSweep As Date
+Private m_SweepReplies As Long
 
 
 '==========================================================================
@@ -340,7 +345,12 @@ Public Sub ScanRecentInbox()
     If days < 1 Then Exit Sub
     m_Busy = True
     EnsureMaps True
-    ScanInboxTable days, False, n, attn
+    Dim folders As New Collection, fld As Object
+    folders.Add Application.Session.GetDefaultFolder(olFolderInbox)
+    AddSubFolders Application.Session.GetDefaultFolder(olFolderInbox), folders, 0   ' 하위 폴더도
+    For Each fld In folders
+        ScanInboxTable days, False, n, attn, fld
+    Next fld
     m_Busy = False
     MsgBoxU "최근 " & days & "일 받은 메일에서 새로 표시했습니다." & vbCrLf & vbCrLf & _
            "  내 메일에 대한 회신: " & n & "건" & vbCrLf & _
@@ -494,6 +504,10 @@ Private Sub RunScheduledChecks()
     End If
     If SliceOver() Then GoTo Done
 
+    ' 2-2) 규칙으로 하위 폴더에 들어간 메일 (SUBFOLDER_SWEEP_MINUTES 마다, 조금씩)
+    If Not SubfolderSweepStep() Then GoTo Done
+    If SliceOver() Then GoTo Done
+
     today = Format$(Date, "yyyy-mm-dd")
 
     ' 3) [답장 대기] 하루 한 번 + 변화가 있을 때 (목록 정보만 보므로 빠름)
@@ -586,6 +600,48 @@ Private Function ProcessPendingNew() As Boolean
     End If
     ProcessPendingNew = True
 Done:
+End Function
+
+' 받은 편지함 하위 폴더의 최근 1일 메일 검사 (규칙으로 옮겨진 회신 등). 이번 차례를 다 끝냈으면 True
+Private Function SubfolderSweepStep() As Boolean
+    Dim reps As Long, attns As Long
+    On Error GoTo Fail
+    If SUBFOLDER_SWEEP_MINUTES <= 0 Then SubfolderSweepStep = True: Exit Function
+    If m_SubSweepIdx = 0 Then
+        If m_LastSubSweep <> 0 Then
+            If DateDiff("n", m_LastSubSweep, Now) < SUBFOLDER_SWEEP_MINUTES Then SubfolderSweepStep = True: Exit Function
+        End If
+        Set m_SubFolders = New Collection
+        AddSubFolders Application.Session.GetDefaultFolder(olFolderInbox), m_SubFolders, 0
+        m_SubSweepIdx = 1
+        m_SweepReplies = 0
+    End If
+    Do While m_SubSweepIdx <= m_SubFolders.Count
+        reps = 0
+        If Not ScanInboxTable(1, True, reps, attns, m_SubFolders(m_SubSweepIdx)) Then
+            m_SweepReplies = m_SweepReplies + reps
+            Exit Function                                  ' 다음에 이어서
+        End If
+        m_SweepReplies = m_SweepReplies + reps
+        m_SubSweepIdx = m_SubSweepIdx + 1
+        If SliceOver() Then Exit Function
+    Loop
+    ' 한 바퀴 끝
+    m_SubSweepIdx = 0
+    m_LastSubSweep = Now
+    Set m_SubFolders = Nothing
+    If m_SweepReplies > 0 And SHOW_TOAST Then
+        ShowToast "내 메일에 회신 " & m_SweepReplies & "건", _
+                  "받은 편지함의 하위 폴더에 들어온 회신입니다.", _
+                  "클릭하면 회신 목록을 엽니다.", URI_SCHEME & ":list"
+    End If
+    m_SweepReplies = 0
+    SubfolderSweepStep = True
+    Exit Function
+Fail:
+    m_SubSweepIdx = 0
+    m_LastSubSweep = Now
+    SubfolderSweepStep = True
 End Function
 
 ' Outlook 이 꺼져 있는 동안 온 메일. 다 처리했으면 True
@@ -865,14 +921,15 @@ End Function
 
 ' 받은 편지함을 목록(Table)으로 훑으며 ProcessMail. sliced = 시간 나눠서. 다 끝났으면 True
 Private Function ScanInboxTable(ByVal days As Long, ByVal sliced As Boolean, _
-                                ByRef replies As Long, ByRef attns As Long) As Boolean
+                                ByRef replies As Long, ByRef attns As Long, Optional ByVal fld As Object) As Boolean
     Dim C_EID As Long, C_CLASS As Long, C_RCV As Long
     Dim tbl As Object, arr As Variant, r As Long, t As Date, cutoff As Date
     Dim eid As String, itm As Object, attn As Boolean, cnt As Long
     On Error GoTo Fail
     EnsureDicts
     cutoff = Now - days
-    Set tbl = Application.Session.GetDefaultFolder(olFolderInbox).GetTable
+    If fld Is Nothing Then Set fld = Application.Session.GetDefaultFolder(olFolderInbox)
+    Set tbl = fld.GetTable
     tbl.Columns.RemoveAll
     C_EID = AddCol(tbl, "EntryID")
     C_CLASS = AddCol(tbl, "MessageClass")
@@ -913,7 +970,7 @@ End Function
 ' 받은 메일이 답장한 "내 메일"을 찾아서 반환 (없으면 Nothing)
 Private Function FindRepliedMine(ByVal mail As Object) As Object
     Dim pa As Object, inReplyTo As String, refs As String, ids As Collection, i As Long
-    Dim key As String, f As Object, conv As String
+    Dim key As String, f As Object, conv As String, refIds As Collection
     On Error GoTo Done
     EnsureMaps False
     Set pa = mail.PropertyAccessor
@@ -933,6 +990,27 @@ Private Function FindRepliedMine(ByVal mail As Object) As Object
             End If
         End If
     Next i
+
+    ' 1-2) 스레드 중간 메일에 단 답장: 이 스레드(References)에 내 메일이 있고, 나를 받는 사람(To)으로 했으면
+    '      (예: 내 메일에 동료가 먼저 전체회신 -> 거래처가 그 메일에 답하면서 나를 To 에 넣음)
+    '      나는 참조(CC)로만 받은 남의 회신은 제외
+    If Not MATCH_WHOLE_THREAD And ids.Count > 0 Then
+        Set refIds = SplitIds(GetPropStr(pa, PR_INTERNET_REFERENCES))
+        For i = 1 To refIds.Count
+            key = LCase$(refIds(i))
+            If m_SentIds.Exists(key) Then
+                If IsToMe(mail) Then
+                    Set f = GetItemSafe(m_SentIds(key))
+                    If f Is Nothing Then Set f = FindSentByMessageId(key)
+                    If Not f Is Nothing Then
+                        Set FindRepliedMine = f
+                        Exit Function
+                    End If
+                End If
+                Exit For
+            End If
+        Next i
+    End If
 
     ' 2) 답장 정보(In-Reply-To)가 없는 메일 (일부 웹메일 등):
     '    같은 스레드에 내가 먼저 보낸 메일이 있고, 이 메일이 나를 받는 사람(To)으로 했고,
