@@ -1358,17 +1358,32 @@ Private Function IsBulkMail(ByVal itm As Object) As Boolean
     Dim hdr As String, snd As String
     On Error Resume Next
     hdr = LCase$(GetPropStr(itm.PropertyAccessor, PR_TRANSPORT_MESSAGE_HEADERS))
-    If InStr(1, hdr, "list-unsubscribe:", vbBinaryCompare) > 0 Then IsBulkMail = True
-    If InStr(1, hdr, "precedence: bulk", vbBinaryCompare) > 0 Then IsBulkMail = True
-    If InStr(1, hdr, "precedence: list", vbBinaryCompare) > 0 Then IsBulkMail = True
-    If InStr(1, hdr, "precedence: junk", vbBinaryCompare) > 0 Then IsBulkMail = True
     snd = GetSenderSmtp(itm)
+    ' (loungepm@ Microsoft 365 )
+    If Not IsMyDomain(snd) Then
+        If InStr(1, hdr, "list-unsubscribe:", vbBinaryCompare) > 0 Then IsBulkMail = True
+        If InStr(1, hdr, "precedence: list", vbBinaryCompare) > 0 Then IsBulkMail = True
+    End If
+    If InStr(1, hdr, "precedence: bulk", vbBinaryCompare) > 0 Then IsBulkMail = True
+    If InStr(1, hdr, "precedence: junk", vbBinaryCompare) > 0 Then IsBulkMail = True
     If InStr(1, snd, "noreply", vbBinaryCompare) > 0 Then IsBulkMail = True
     If InStr(1, snd, "no-reply", vbBinaryCompare) > 0 Then IsBulkMail = True
     If InStr(1, snd, "donotreply", vbBinaryCompare) > 0 Then IsBulkMail = True
     If InStr(1, snd, "do-not-reply", vbBinaryCompare) > 0 Then IsBulkMail = True
     If InStr(1, snd, "mailer-daemon", vbBinaryCompare) > 0 Then IsBulkMail = True
     If InStr(1, snd, "postmaster", vbBinaryCompare) > 0 Then IsBulkMail = True
+End Function
+
+Private Function IsMyDomain(ByVal addr As String) As Boolean
+    Dim p As Long, dom As String
+    addr = LCase$(Trim$(addr))
+    p = InStrRev(addr, "@")
+    If p = 0 Then
+        IsMyDomain = (Len(addr) > 0)       ' SMTP (Exchange)
+        Exit Function
+    End If
+    dom = Mid$(addr, p)                    ' "@globalhansoll.com"
+    IsMyDomain = (InStr(1, MyAddresses(), dom & ";", vbTextCompare) > 0)
 End Function
 
 ' "; Kim, Tom; ..."

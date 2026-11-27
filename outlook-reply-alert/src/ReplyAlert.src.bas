@@ -1386,17 +1386,34 @@ Private Function IsBulkMail(ByVal itm As Object) As Boolean
     Dim hdr As String, snd As String
     On Error Resume Next
     hdr = LCase$(GetPropStr(itm.PropertyAccessor, PR_TRANSPORT_MESSAGE_HEADERS))
-    If InStr(1, hdr, "list-unsubscribe:", vbBinaryCompare) > 0 Then IsBulkMail = True
-    If InStr(1, hdr, "precedence: bulk", vbBinaryCompare) > 0 Then IsBulkMail = True
-    If InStr(1, hdr, "precedence: list", vbBinaryCompare) > 0 Then IsBulkMail = True
-    If InStr(1, hdr, "precedence: junk", vbBinaryCompare) > 0 Then IsBulkMail = True
     snd = GetSenderSmtp(itm)
+    ' 수신거부/메일링리스트 표시는 회사 밖에서 온 메일만 단체 메일로 봄
+    ' (loungepm@ 같은 Microsoft 365 그룹을 거친 동료 메일에도 이 표시가 붙기 때문)
+    If Not IsMyDomain(snd) Then
+        If InStr(1, hdr, "list-unsubscribe:", vbBinaryCompare) > 0 Then IsBulkMail = True
+        If InStr(1, hdr, "precedence: list", vbBinaryCompare) > 0 Then IsBulkMail = True
+    End If
+    If InStr(1, hdr, "precedence: bulk", vbBinaryCompare) > 0 Then IsBulkMail = True
+    If InStr(1, hdr, "precedence: junk", vbBinaryCompare) > 0 Then IsBulkMail = True
     If InStr(1, snd, "noreply", vbBinaryCompare) > 0 Then IsBulkMail = True
     If InStr(1, snd, "no-reply", vbBinaryCompare) > 0 Then IsBulkMail = True
     If InStr(1, snd, "donotreply", vbBinaryCompare) > 0 Then IsBulkMail = True
     If InStr(1, snd, "do-not-reply", vbBinaryCompare) > 0 Then IsBulkMail = True
     If InStr(1, snd, "mailer-daemon", vbBinaryCompare) > 0 Then IsBulkMail = True
     If InStr(1, snd, "postmaster", vbBinaryCompare) > 0 Then IsBulkMail = True
+End Function
+
+' 보낸 사람 주소가 내 회사 도메인인지 (내 주소들의 @ 뒤 부분과 비교)
+Private Function IsMyDomain(ByVal addr As String) As Boolean
+    Dim p As Long, dom As String
+    addr = LCase$(Trim$(addr))
+    p = InStrRev(addr, "@")
+    If p = 0 Then
+        IsMyDomain = (Len(addr) > 0)       ' SMTP 주소가 없으면 사내(Exchange) 주소로 봄
+        Exit Function
+    End If
+    dom = Mid$(addr, p)                    ' "@globalhansoll.com"
+    IsMyDomain = (InStr(1, MyAddresses(), dom & ";", vbTextCompare) > 0)
 End Function
 
 ' "홍길동; Kim, Tom; ..." 의 이름 수
