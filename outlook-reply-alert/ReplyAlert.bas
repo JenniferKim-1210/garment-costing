@@ -28,7 +28,7 @@ Attribute VB_Name = "ReplyAlert"
 '
 '  Macros (Alt+F8): MarkDone, ShowReplyList, ShowAttentionList, ShowMyTodoList,
 '    ShowNoReplyList, CheckMyTodo, CheckNoReply, ScanRecentInbox, RecheckReplyMarks, TestSelectedMail,
-'    TestToast, EditMyNames, FixBrokenCategories
+'    TestToast, EditMyNames, FixBrokenCategories, ReplyReport
 '==========================================================================
 Option Explicit
 
@@ -2098,6 +2098,201 @@ Private Function FirstLines(ByVal mail As Object, ByVal n As Long) As String
 End Function
 
 ' ( Outlook )
+' ==========================================================================
+' ReplyReport : ()
+' - Outlook ( )
+' ==========================================================================
+Public Sub ReplyReport()
+    Dim v As String, days As Long, cutoff As Date
+    Dim convs As Object, myLast As Object, myLastId As Object, myFirst As Object, mySubj As Object, myTo As Object
+    Dim cnt As Object, lastT As Object, lastWho As Object, lastId As Object, whoSet As Object
+    Dim folders As New Collection, fld As Object, inbox As Object
+    Dim tbl As Object, arr As Variant, r As Long, t As Date, conv As String, k As Variant
+    Dim C_EID As Long, C_CLASS As Long, C_TIME As Long, C_SUBJ As Long, C_TO As Long, C_CONV As Long, C_SND As Long, C_SNDNAME As Long
+    Dim rowsNew As String, rowsWait As String, rowsNone As String, nNew As Long, nWait As Long, nNone As Long
+    Dim html As String, path As String, row As String, status As String
+
+    EnsureInit
+    v = InputBox("How many days back should I check the mail I sent?" & vbCrLf & "(e.g. 7, 14, 30)", "ReplyAlert", "14")
+    If Len(Trim$(v)) = 0 Then Exit Sub
+    If Not IsNumeric(v) Then Exit Sub
+    days = CLng(v)
+    If days < 1 Then Exit Sub
+    cutoff = Now - days
+    EnsureDicts
+
+    Set convs = NewDict(): Set myLast = NewDict(): Set myLastId = NewDict(): Set myFirst = NewDict()
+    Set mySubj = NewDict(): Set myTo = NewDict()
+    Set cnt = NewDict(): Set lastT = NewDict(): Set lastWho = NewDict(): Set lastId = NewDict(): Set whoSet = NewDict()
+
+    On Error Resume Next
+    ' 1) ->
+    Set tbl = Application.Session.GetDefaultFolder(olFolderSentMail).GetTable
+    tbl.Columns.RemoveAll
+    C_EID = AddCol(tbl, "EntryID")
+    C_CLASS = AddCol(tbl, "MessageClass")
+    C_TIME = AddCol(tbl, "SentOn")
+    C_SUBJ = AddCol(tbl, "Subject")
+    C_TO = AddCol(tbl, PR_DISPLAY_TO)
+    C_CONV = AddCol(tbl, PR_CONVERSATION_ID)
+    tbl.Sort "[SentOn]", True
+    Do Until tbl.EndOfTable
+        arr = tbl.GetArray(TABLE_CHUNK)
+        If Not IsArray(arr) Then Exit Do
+        For r = LBound(arr, 1) To UBound(arr, 1)
+            t = VDate(AV(arr, r, C_TIME))
+            If t <> 0 And t < cutoff Then GoTo SentDone
+            If Left$(RowClass(arr, r, C_CLASS), 8) = "ipm.note" Then
+                conv = VHex(AV(arr, r, C_CONV))
+                If Len(conv) = 0 Then conv = "eid:" & VStr(AV(arr, r, C_EID))
+                If Not convs.Exists(conv) Then
+                    convs(conv) = True
+                    myLast(conv) = t
+                    myLastId(conv) = VStr(AV(arr, r, C_EID))
+                    mySubj(conv) = VStr(AV(arr, r, C_SUBJ))
+                    myTo(conv) = VStr(AV(arr, r, C_TO))
+                End If
+                myFirst(conv) = t
+            End If
+        Next r
+        DoEvents
+    Loop
+SentDone:
+    If convs.Count = 0 Then
+        MsgBoxU U("\uCD5C\uADFC ") & days & U("\uC77C \uB3D9\uC548 \uBCF4\uB0B8 \uBA54\uC77C\uC774 \uC5C6\uC2B5\uB2C8\uB2E4."), vbInformation
+        Exit Sub
+    End If
+
+    ' 2) ( ) +
+    Set inbox = Application.Session.GetDefaultFolder(olFolderInbox)
+    folders.Add inbox
+    AddSubFolders inbox, folders, 0
+    folders.Add Application.Session.GetDefaultFolder(olFolderDeletedItems)
+    For Each fld In folders
+        Set tbl = Nothing
+        Set tbl = fld.GetTable
+        If Not tbl Is Nothing Then
+            tbl.Columns.RemoveAll
+            C_EID = AddCol(tbl, "EntryID")
+            C_CLASS = AddCol(tbl, "MessageClass")
+            C_TIME = AddCol(tbl, "ReceivedTime")
+            C_SNDNAME = AddCol(tbl, "SenderName")
+            C_SND = AddCol(tbl, PR_SENDER_SMTP_ADDRESS)
+            C_CONV = AddCol(tbl, PR_CONVERSATION_ID)
+            tbl.Sort "[ReceivedTime]", True
+            Do Until tbl.EndOfTable
+                arr = tbl.GetArray(TABLE_CHUNK)
+                If Not IsArray(arr) Then Exit Do
+                For r = LBound(arr, 1) To UBound(arr, 1)
+                    t = VDate(AV(arr, r, C_TIME))
+                    If t <> 0 And t < cutoff Then Exit Do
+                    conv = VHex(AV(arr, r, C_CONV))
+                    If Len(conv) > 0 Then
+                        If convs.Exists(conv) Then
+                            If t > myFirst(conv) And Left$(RowClass(arr, r, C_CLASS), 14) <> "ipm.note.rules" _
+                               And Not IsMeAddress(VStr(AV(arr, r, C_SND))) Then
+                                cnt(conv) = cnt(conv) + 1
+                                If Not whoSet.Exists(conv & "|" & VStr(AV(arr, r, C_SNDNAME))) Then
+                                    whoSet(conv & "|" & VStr(AV(arr, r, C_SNDNAME))) = True
+                                End If
+                                If Not lastT.Exists(conv) Then
+                                    lastT(conv) = t
+                                    lastWho(conv) = VStr(AV(arr, r, C_SNDNAME))
+                                    lastId(conv) = VStr(AV(arr, r, C_EID))
+                                ElseIf t > lastT(conv) Then
+                                    lastT(conv) = t
+                                    lastWho(conv) = VStr(AV(arr, r, C_SNDNAME))
+                                    lastId(conv) = VStr(AV(arr, r, C_EID))
+                                End If
+                            End If
+                        End If
+                    End If
+                Next r
+                DoEvents
+            Loop
+        End If
+    Next fld
+    On Error GoTo 0
+
+    ' 3)
+    For Each k In convs.Keys
+        conv = CStr(k)
+        If lastT.Exists(conv) Then
+            row = "<tr><td>" & ReportLink(lastId(conv), mySubj(conv)) & "</td><td>" & HtmlEsc(ShortList(myTo(conv))) & "</td>" & _
+                  "<td>" & Format$(myLast(conv), "mm-dd hh:nn") & "</td><td class=n>" & cnt(conv) & "</td>" & _
+                  "<td>" & HtmlEsc(lastWho(conv)) & "</td><td>" & Format$(lastT(conv), "mm-dd hh:nn") & "</td></tr>"
+            If lastT(conv) > myLast(conv) Then
+                rowsNew = rowsNew & row
+                nNew = nNew + 1
+            Else
+                rowsWait = rowsWait & row
+                nWait = nWait + 1
+            End If
+        Else
+            row = "<tr><td>" & ReportLink(myLastId(conv), mySubj(conv)) & "</td><td>" & HtmlEsc(ShortList(myTo(conv))) & "</td>" & _
+                  "<td>" & Format$(myLast(conv), "mm-dd hh:nn") & "</td><td class=n>0</td><td></td><td></td></tr>"
+            rowsNone = rowsNone & row
+            nNone = nNone + 1
+        End If
+    Next k
+
+    html = "<!doctype html><html><head><meta charset=""utf-8""><title>" & U("\uB0B4 \uBA54\uC77C \uD68C\uC2E0 \uD604\uD669") & "</title><style>" & _
+           "body{font-family:'Malgun Gothic','Segoe UI',sans-serif;margin:24px;color:#222}" & _
+           "h1{font-size:20px}h2{font-size:16px;margin-top:28px}" & _
+           "table{border-collapse:collapse;width:100%;font-size:13px}" & _
+           "th,td{border-bottom:1px solid #ddd;padding:6px 8px;text-align:left;vertical-align:top}" & _
+           "th{background:#f3f3f3}td.n{text-align:right}a{color:#0b57d0;text-decoration:none}" & _
+           ".new{color:#c0392b}.wait{color:#2463b5}.none{color:#d35400}.note{color:#666;font-size:12px}" & _
+           "</style></head><body>" & _
+           "<h1>" & U("\uB0B4 \uBA54\uC77C \uD68C\uC2E0 \uD604\uD669") & " (" & U("\uCD5C\uADFC ") & days & U("\uC77C, ") & Format$(Now, "yyyy-mm-dd hh:nn") & ")</h1>" & _
+           "<p class=note>" & U("\uB0B4\uAC00 \uBCF4\uB0B8 \uBA54\uC77C\uC744 \uC2A4\uB808\uB4DC(\uB300\uD654)\uBCC4\uB85C \uBB36\uC5C8\uC2B5\uB2C8\uB2E4. \uC81C\uBAA9\uC744 \uB204\uB974\uBA74 Outlook \uC5D0\uC11C \uBA54\uC77C\uC774 \uC5F4\uB9BD\uB2C8\uB2E4.") & "</p>"
+    html = html & ReportSection("new", U("\uD68C\uC2E0\uC774 \uC654\uACE0 \uC544\uC9C1 \uB0B4\uAC00 \uB2E4\uC2DC \uB2F5\uD558\uC9C0 \uC54A\uC74C"), nNew, rowsNew, U("\uB9C8\uC9C0\uB9C9 \uD68C\uC2E0"))
+    html = html & ReportSection("wait", U("\uD68C\uC2E0\uC744 \uBC1B\uC740 \uB4A4 \uB0B4\uAC00 \uB2E4\uC2DC \uBCF4\uB0C4 (\uC0C1\uB300 \uB2F5 \uAE30\uB2E4\uB9AC\uB294 \uC911)"), nWait, rowsWait, U("\uB9C8\uC9C0\uB9C9 \uD68C\uC2E0"))
+    html = html & ReportSection("none", U("\uC544\uC9C1 \uD68C\uC2E0 \uC5C6\uC74C"), nNone, rowsNone, "")
+    html = html & "</body></html>"
+
+    path = Environ$("APPDATA") & "\ReplyAlert\ReplyReport.html"
+    WriteUtf8 path, html
+    CreateObject("Shell.Application").Open path
+End Sub
+
+Private Function ReportSection(ByVal cls As String, ByVal title As String, ByVal n As Long, ByVal rows As String, ByVal lastCol As String) As String
+    ReportSection = "<h2 class=" & cls & ">" & HtmlEsc(title) & " - " & n & "</h2>"
+    If n = 0 Then Exit Function
+    ReportSection = ReportSection & "<table><tr><th>" & U("\uC81C\uBAA9") & "</th><th>" & U("\uBC1B\uB294 \uC0AC\uB78C") & "</th><th>" & U("\uB0B4\uAC00 \uB9C8\uC9C0\uB9C9 \uBCF4\uB0B8 \uC2DC\uAC01") & "</th>" & _
+                    "<th>" & U("\uD68C\uC2E0 \uC218") & "</th><th>" & IIf(Len(lastCol) > 0, U("\uB9C8\uC9C0\uB9C9 \uD68C\uC2E0\uD55C \uC0AC\uB78C"), "") & "</th><th>" & IIf(Len(lastCol) > 0, U("\uB9C8\uC9C0\uB9C9 \uD68C\uC2E0 \uC2DC\uAC01"), "") & "</th></tr>" & _
+                    rows & "</table>"
+End Function
+
+Private Function ReportLink(ByVal eid As String, ByVal subj As String) As String
+    If Len(subj) = 0 Then subj = "(" & U("\uC81C\uBAA9 \uC5C6\uC74C") & ")"
+    If Len(eid) = 0 Then
+        ReportLink = HtmlEsc(subj)
+    Else
+        ReportLink = "<a href=""" & URI_SCHEME & ":open/" & eid & """>" & HtmlEsc(subj) & "</a>"
+    End If
+End Function
+
+' "A; B; C; D" -> "A; B 2"
+Private Function ShortList(ByVal s As String) As String
+    Dim parts() As String
+    If Len(Trim$(s)) = 0 Then Exit Function
+    parts = Split(s, ";")
+    If UBound(parts) <= 1 Then
+        ShortList = s
+    Else
+        ShortList = Trim$(parts(0)) & "; " & Trim$(parts(1)) & " " & U("\uC678 ") & (UBound(parts) - 1) & U("\uBA85")
+    End If
+End Function
+
+Private Function HtmlEsc(ByVal s As String) As String
+    s = Replace(s, "&", "&amp;")
+    s = Replace(s, "<", "&lt;")
+    s = Replace(s, ">", "&gt;")
+    s = Replace(s, """", "&quot;")
+    HtmlEsc = s
+End Function
+
 Public Sub EditMyNames()
     EnsureInit
     Shell "notepad.exe """ & NamesFilePath() & """", vbNormalFocus
