@@ -1708,6 +1708,7 @@ End Function
 '  Strings / Unicode helpers
 '==========================================================================
 Private Sub EnsureInit()
+    On Error Resume Next      ' 시작할 때 오류 창이 뜨지 않도록
     If m_Inited Then Exit Sub
     APP_TITLE = "메일 알리미"
     CATEGORY_NAME = "내 메일 회신"
@@ -1784,11 +1785,24 @@ End Sub
 
 ' "\uAE40\uB098" 같은 표기를 실제 글자로 (빌드 때 한글을 이렇게 바꿔 둠)
 Private Function U(ByVal s As String) As String
-    Dim i As Long, out As String
+    Dim i As Long, j As Long, v As Long, d As Long, out As String, ok As Boolean
     i = 1
     Do While i <= Len(s)
+        ok = False
         If Mid$(s, i, 2) = "\u" And i + 5 <= Len(s) Then
-            out = out & ChrW(CLng("&H" & Mid$(s, i + 2, 4) & "&"))
+            ok = True
+            v = 0
+            For j = 0 To 3
+                d = InStr(1, "0123456789ABCDEF", UCase$(Mid$(s, i + 2 + j, 1)), vbBinaryCompare) - 1
+                If d < 0 Then
+                    ok = False
+                    Exit For
+                End If
+                v = v * 16 + d
+            Next j
+        End If
+        If ok Then
+            out = out & ChrW(v)
             i = i + 6
         Else
             out = out & Mid$(s, i, 1)

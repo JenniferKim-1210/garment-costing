@@ -1674,6 +1674,7 @@ End Function
 '  Strings / Unicode helpers
 '==========================================================================
 Private Sub EnsureInit()
+    On Error Resume Next
     If m_Inited Then Exit Sub
     APP_TITLE = U("\uBA54\uC77C \uC54C\uB9AC\uBBF8")
     CATEGORY_NAME = U("\uB0B4 \uBA54\uC77C \uD68C\uC2E0")
@@ -1750,11 +1751,24 @@ End Sub
 
 ' "\uAE40\uB098" ( )
 Private Function U(ByVal s As String) As String
-    Dim i As Long, out As String
+    Dim i As Long, j As Long, v As Long, d As Long, out As String, ok As Boolean
     i = 1
     Do While i <= Len(s)
+        ok = False
         If Mid$(s, i, 2) = "\u" And i + 5 <= Len(s) Then
-            out = out & ChrW(CLng("&H" & Mid$(s, i + 2, 4) & "&"))
+            ok = True
+            v = 0
+            For j = 0 To 3
+                d = InStr(1, "0123456789ABCDEF", UCase$(Mid$(s, i + 2 + j, 1)), vbBinaryCompare) - 1
+                If d < 0 Then
+                    ok = False
+                    Exit For
+                End If
+                v = v * 16 + d
+            Next j
+        End If
+        If ok Then
+            out = out & ChrW(v)
             i = i + 6
         Else
             out = out & Mid$(s, i, 1)
