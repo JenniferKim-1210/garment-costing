@@ -2704,7 +2704,7 @@ End Function
 '  (파일로도 저장: %APPDATA%\ReplyAlert\WeeklyReport.txt)
 ' ==========================================================================
 Public Sub WeeklyReportForClaude()
-    Dim v As String, days As Long, cutoff As Date
+    Dim v As String, days As Long, cutoff As Date, endT As Date, wk As Long, rangeText As String
     Dim myKeys As Object, threads As Object, subj As Object, lastT As Object
     Dim folders As New Collection, fld As Object, inbox As Object
     Dim tbl As Object, arr As Variant, r As Long, t As Date, topic As String, conv As String, key As String, k As Variant
@@ -2714,12 +2714,17 @@ Public Sub WeeklyReportForClaude()
     Dim arrM() As Variant, tmp As Variant, who As String, isMine As Boolean
 
     EnsureInit
-    v = InputBox("How many days back should the weekly report cover?" & vbCrLf & "(e.g. 7)", "ReplyAlert", "7")
+    ' 월~토 한 주. 월요일에 실행하면 기본값은 지난주
+    v = InputBox("Which week (Mon-Sat)?" & vbCrLf & "0 = this week, 1 = last week, 2 = two weeks ago", "ReplyAlert", _
+                 IIf(Weekday(Date, vbMonday) = 1, "1", "0"))
     If Len(Trim$(v)) = 0 Then Exit Sub
     If Not IsNumeric(v) Then Exit Sub
-    days = CLng(v)
-    If days < 1 Then Exit Sub
-    cutoff = Date - days + 1
+    wk = CLng(v)
+    If wk < 0 Then Exit Sub
+    cutoff = Date - (Weekday(Date, vbMonday) - 1) - 7 * wk     ' 그 주 월요일 0시
+    endT = cutoff + 6                                          ' 일요일 0시 (= 토요일까지)
+    days = 6
+    rangeText = Format$(cutoff, "m/d") & "(" & "월" & ")~" & Format$(cutoff + 5, "m/d") & "(" & "토" & ")"
     Set myKeys = NewDict(): Set threads = NewDict(): Set subj = NewDict(): Set lastT = NewDict()
 
     On Error Resume Next
@@ -2739,7 +2744,7 @@ Public Sub WeeklyReportForClaude()
         For r = LBound(arr, 1) To UBound(arr, 1)
             t = VDate(AV(arr, r, C_TIME))
             If t <> 0 And t < cutoff Then GoTo SentDone
-            If Left$(RowClass(arr, r, C_CLASS), 8) = "ipm.note" Then
+            If t < endT And Left$(RowClass(arr, r, C_CLASS), 8) = "ipm.note" Then
                 conv = VHex(AV(arr, r, C_CONV))
                 topic = VStr(AV(arr, r, C_TOPIC))
                 If Len(topic) = 0 Then topic = VStr(AV(arr, r, C_SUBJ))
@@ -2754,7 +2759,7 @@ Public Sub WeeklyReportForClaude()
     Loop
 SentDone:
     If threads.Count = 0 Then
-        MsgBoxU "최근 " & days & "일 동안 보낸 메일이 없습니다.", vbInformation
+        MsgBoxU rangeText & " 동안 보낸 메일이 없습니다.", vbInformation
         Exit Sub
     End If
 
@@ -2780,7 +2785,7 @@ SentDone:
                 For r = LBound(arr, 1) To UBound(arr, 1)
                     t = VDate(AV(arr, r, C_TIME))
                     If t <> 0 And t < cutoff Then Exit Do
-                    If Left$(RowClass(arr, r, C_CLASS), 8) = "ipm.note" And Left$(RowClass(arr, r, C_CLASS), 14) <> "ipm.note.rules" Then
+                    If t < endT And Left$(RowClass(arr, r, C_CLASS), 8) = "ipm.note" And Left$(RowClass(arr, r, C_CLASS), 14) <> "ipm.note.rules" Then
                         conv = VHex(AV(arr, r, C_CONV))
                         topic = VStr(AV(arr, r, C_TOPIC))
                         If Len(topic) = 0 Then topic = VStr(AV(arr, r, C_SUBJ))
@@ -2805,8 +2810,8 @@ SentDone:
     If total > 300 Then perMsg = 400
     If total > 600 Then perMsg = 250
 
-    out = "아래는 지난 " & days & "일 동안 내가 주고받은 업무 메일을 스레드(같은 제목)별로 정리한 것입니다." & vbCrLf & _
-          "이 내용으로 팀장님께 보낼 주간 업무 보고를 한국어로 작성해 주세요." & vbCrLf & vbCrLf & _
+    out = "아래는 " & rangeText & " 한 주 동안 내가 주고받은 업무 메일을 스레드(같은 제목)별로 정리한 것입니다." & vbCrLf & _
+          "이 내용으로 팀장님께 보낼 " & rangeText & " 주간 업무 보고를 한국어로 작성해 주세요." & vbCrLf & vbCrLf & _
           "형식:" & vbCrLf & _
           "1. 거래처/업무(스타일, PO)별로 묶어서" & vbCrLf & _
           "   - 진행 상황 (2~3줄)" & vbCrLf & _
@@ -2854,7 +2859,7 @@ SentDone:
     On Error Resume Next
     Shell "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand " & B64Utf16(ps), vbHide
     On Error GoTo 0
-    MsgBoxU "스레드 " & nThread & "개, 메일 " & nMail & "통을 정리해서 복사했습니다." & vbCrLf & vbCrLf & _
+    MsgBoxU rangeText & " : 스레드 " & nThread & "개, 메일 " & nMail & "통을 정리해서 복사했습니다." & vbCrLf & vbCrLf & _
             "Claude 창에 Ctrl+V 로 붙여넣고 보내면 주간 보고가 만들어집니다." & vbCrLf & vbCrLf & _
             "(붙여넣기가 안 되면 이 파일을 메모장으로 열어 전체 복사하세요:" & vbCrLf & path & ")", vbInformation
 End Sub
