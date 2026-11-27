@@ -37,6 +37,8 @@ Option Explicit
 ' True  = every mail I receive in a conversation (thread) where I sent mail earlier ("mail I exchange")
 ' False = only direct replies to my mail (and mid-thread replies that put me in To)
 Private Const REPLY_THREAD_MODE As Boolean = True
+Private Const REPLY_REQUIRE_TO As Boolean = True        ' True = only when I am in To (not CC only)
+Private Const REPLY_REQUIRE_MY_RECIPIENT As Boolean = True ' (thread mode) True = sender must be someone I sent that thread to
 Private Const MATCH_WHOLE_THREAD As Boolean = False ' (direct mode only) also use the References header
 Private Const CLEAR_REPLY_MARK_WHEN_I_REPLY As Boolean = False ' True = remove the mark after I reply to it
 Private Const REPLY_TRACK_DAYS As Long = 60         ' alert replies to mail I sent in the last N days
@@ -147,6 +149,9 @@ Private m_SentIds As Object        ' 내가 보낸 메일 ID(소문자) -> Entry
 Private m_MyLastTime As Object     ' 대화 ID -> 내가 마지막으로 보낸 시각
 Private m_MyLastId As Object       ' 대화 ID -> 내가 마지막으로 보낸 메일 EntryID
 Private m_MyFirstTime As Object    ' 대화 ID -> 내가 처음 보낸 시각
+Private m_MyThreadFirst As Object  ' "c:대화ID" / "t:제목" -> 내가 처음 보낸 시각
+Private m_MyThreadIds As Object    ' "c:대화ID" / "t:제목" -> 내가 보낸 메일 EntryID 들 ("|" 구분, 최대 10)
+Private m_ThreadRecips As Object   ' 위 키 -> 내 메일을 받은 사람 주소들 ("|a|b|")
 Private m_OtherLastTime As Object  ' 대화 ID -> 다른 사람 메일을 마지막으로 받은 시각
 Private m_RepliedIds As Object     ' 누군가 답장한 메일 ID(소문자) (받은 메일의 In-Reply-To)
 Private m_SmtpCache As Object      ' Exchange 주소 -> SMTP 주소
@@ -229,6 +234,7 @@ Public Sub OnItemSent(ByVal sentItem As Object)
             m_SentIdsRefreshAt = Now + TimeSerial(0, 5, 0)  ' 메일 ID 가 아직 없으면 5분 뒤 다시 읽음
         End If
         NoteMine SafeConvId(sentItem), t, eid
+        NoteMyThread SafeConvId(sentItem), NormTopic(sentItem.ConversationTopic), t, eid
     End If
     TagPeople sentItem     ' 사람별 목록
     m_TodoDirty = True     ' 내가 답했으니 [내 답장 필요] 등 정리
@@ -493,8 +499,8 @@ Private Sub RunScheduledChecks()
         GoTo Done
     End If
     ' 0-2) 예전 규칙으로 잘못 붙은 [내 메일 회신] 표시 다시 확인 (한 번만)
-    If GetSetting(SETTINGS_APP, "Cleanup", "ReplyRecheck1", "") = "" Then
-        SaveSetting SETTINGS_APP, "Cleanup", "ReplyRecheck1", "done"
+    If GetSetting(SETTINGS_APP, "Cleanup", "ReplyRecheck2", "") = "" Then
+        SaveSetting SETTINGS_APP, "Cleanup", "ReplyRecheck2", "done"
         RecheckReplyMarksCore
         GoTo Done
     End If
@@ -711,6 +717,9 @@ Private Sub EnsureDicts()
     If m_MyLastTime Is Nothing Then Set m_MyLastTime = NewDict()
     If m_MyLastId Is Nothing Then Set m_MyLastId = NewDict()
     If m_MyFirstTime Is Nothing Then Set m_MyFirstTime = NewDict()
+    If m_MyThreadFirst Is Nothing Then Set m_MyThreadFirst = NewDict()
+    If m_MyThreadIds Is Nothing Then Set m_MyThreadIds = NewDict()
+    If m_ThreadRecips Is Nothing Then Set m_ThreadRecips = NewDict()
     If m_OtherLastTime Is Nothing Then Set m_OtherLastTime = NewDict()
     If m_RepliedIds Is Nothing Then Set m_RepliedIds = NewDict()
     If m_SmtpCache Is Nothing Then Set m_SmtpCache = NewDict()
@@ -737,6 +746,9 @@ Private Sub BuildMaps()
     Set m_MyLastTime = NewDict()
     Set m_MyLastId = NewDict()
     Set m_MyFirstTime = NewDict()
+    Set m_MyThreadFirst = NewDict()
+    Set m_MyThreadIds = NewDict()
+    Set m_ThreadRecips = NewDict()
     Set m_OtherLastTime = NewDict()
     Set m_RepliedIds = NewDict()
 
@@ -752,8 +764,8 @@ Private Sub BuildMaps()
 End Sub
 
 Private Sub AddMapsFromSent(ByVal cutoff As Date)
-    Dim C_EID As Long, C_CLASS As Long, C_TIME As Long, C_MSGID As Long, C_CONV As Long
-    Dim tbl As Object, arr As Variant, r As Long, t As Date, msgId As String, eid As String
+    Dim C_EID As Long, C_CLASS As Long, C_TIME As Long, C_MSGID As Long, C_CONV As Long, C_TOPIC As Long, C_SUBJ As Long
+    Dim tbl As Object, arr As Variant, r As Long, t As Date, msgId As String, eid As String, topic As String
     On Error GoTo Done
     Set tbl = Application.Session.GetDefaultFolder(olFolderSentMail).GetTable
     tbl.Columns.RemoveAll
@@ -762,6 +774,8 @@ Private Sub AddMapsFromSent(ByVal cutoff As Date)
     C_TIME = AddCol(tbl, "SentOn")
     C_MSGID = AddCol(tbl, PR_INTERNET_MESSAGE_ID)
     C_CONV = AddCol(tbl, PR_CONVERSATION_ID)
+    C_TOPIC = AddCol(tbl, PR_CONVERSATION_TOPIC)
+    C_SUBJ = AddCol(tbl, "Subject")
     If C_EID < 0 Or C_TIME < 0 Then GoTo Done
     tbl.Sort "[SentOn]", True
     Do Until tbl.EndOfTable
@@ -775,12 +789,62 @@ Private Sub AddMapsFromSent(ByVal cutoff As Date)
                 msgId = NormId(VStr(AV(arr, r, C_MSGID)))
                 If Len(msgId) > 0 Then m_SentIds(msgId) = eid
                 NoteMine VHex(AV(arr, r, C_CONV)), t, eid
+                topic = VStr(AV(arr, r, C_TOPIC))
+                If Len(topic) = 0 Then topic = VStr(AV(arr, r, C_SUBJ))
+                NoteMyThread VHex(AV(arr, r, C_CONV)), NormTopic(topic), t, eid
             End If
         Next r
         DoEvents
     Loop
 Done:
 End Sub
+
+' 내가 보낸 메일을 스레드(대화 ID / 제목)별로 기억
+Private Sub NoteMyThread(ByVal conv As String, ByVal topic As String, ByVal t As Date, ByVal eid As String)
+    If t = 0 Then Exit Sub
+    If Len(conv) > 0 Then NoteMyThreadKey "c:" & conv, t, eid
+    If Len(topic) >= 4 Then NoteMyThreadKey "t:" & topic, t, eid
+End Sub
+
+Private Sub NoteMyThreadKey(ByVal key As String, ByVal t As Date, ByVal eid As String)
+    Dim ids As String
+    If Not m_MyThreadFirst.Exists(key) Then
+        m_MyThreadFirst(key) = t
+    ElseIf m_MyThreadFirst(key) > t Then
+        m_MyThreadFirst(key) = t
+    End If
+    If m_MyThreadIds.Exists(key) Then ids = m_MyThreadIds(key)
+    If InStr(1, ids, "|" & eid & "|", vbBinaryCompare) = 0 And UBound(Split(ids, "|")) < 20 Then
+        If Len(ids) = 0 Then ids = "|"
+        m_MyThreadIds(key) = ids & eid & "|"
+        If m_ThreadRecips.Exists(key) Then m_ThreadRecips.Remove key    ' 받는 사람 목록 다시 만들기
+    End If
+End Sub
+
+' 이 스레드에서 내가 보낸 메일들의 받는 사람(To/CC) 중에 addr 가 있는지
+Private Function ThreadRecipHas(ByVal key As String, ByVal addr As String) As Boolean
+    Dim ids() As String, i As Long, itm As Object, r As Object, lst As String
+    On Error Resume Next
+    addr = LCase$(Trim$(addr))
+    If Len(addr) = 0 Then Exit Function
+    If Not m_ThreadRecips.Exists(key) Then
+        lst = "|"
+        ids = Split(m_MyThreadIds(key), "|")
+        For i = LBound(ids) To UBound(ids)
+            If Len(ids(i)) > 0 Then
+                Set itm = Nothing
+                Set itm = GetItemSafe(ids(i))
+                If Not itm Is Nothing Then
+                    For Each r In itm.Recipients
+                        lst = lst & RecipientSmtp(r) & "|"
+                    Next r
+                End If
+            End If
+        Next i
+        m_ThreadRecips(key) = lst
+    End If
+    ThreadRecipHas = (InStr(1, m_ThreadRecips(key), "|" & addr & "|", vbTextCompare) > 0)
+End Function
 
 Private Sub AddMapsFromReceived(ByVal fld As Object, ByVal cutoff As Date)
     Dim C_EID As Long, C_CLASS As Long, C_RCV As Long, C_SENT As Long
@@ -993,6 +1057,10 @@ Private Function FindRepliedMine(ByVal mail As Object) As Object
     Dim key As String, f As Object, conv As String, refIds As Collection
     On Error GoTo Done
     EnsureMaps False
+    ' 내가 받는 사람(To)으로 들어 있는 메일만 (참조(CC)만 있으면 제외)
+    If REPLY_REQUIRE_TO Then
+        If Not IsToMe(mail) Then GoTo Done
+    End If
     Set pa = mail.PropertyAccessor
     inReplyTo = GetPropStr(pa, PR_IN_REPLY_TO_ID)
     If MATCH_WHOLE_THREAD Then refs = GetPropStr(pa, PR_INTERNET_REFERENCES)
@@ -1032,17 +1100,32 @@ Private Function FindRepliedMine(ByVal mail As Object) As Object
         Next i
     End If
 
-    ' 2) [스레드 모드] 내가 먼저 메일을 보낸 스레드에서 받은 메일이면 (주고받는 메일)
+    ' 2) [스레드 모드] 내가 먼저 메일을 보낸 스레드(같은 대화 또는 RE:/FW: 를 뗀 같은 제목)에서 받은 메일이고,
+    '    보낸 사람이 그 스레드에서 내 메일을 받았던 사람이면 (주고받는 메일)
     If REPLY_THREAD_MODE Then
+        Dim keys(1 To 2) As String, kk As Long, rcv As Date, snd As String, topic As String, idList() As String
         conv = SafeConvId(mail)
-        If Len(conv) > 0 Then
-            If m_MyFirstTime.Exists(conv) Then
-                If m_MyFirstTime(conv) < GetReceived(mail) Then
-                    Set FindRepliedMine = GetItemSafe(m_MyLastId(conv))
-                    If FindRepliedMine Is Nothing Then Set FindRepliedMine = mail   ' 내 메일을 못 열어도 표시는 함
+        topic = mail.ConversationTopic
+        If Len(topic) = 0 Then topic = mail.Subject
+        topic = NormTopic(topic)
+        If Len(conv) > 0 Then keys(1) = "c:" & conv
+        If Len(topic) >= 4 Then keys(2) = "t:" & topic
+        rcv = GetReceived(mail)
+        snd = GetSenderSmtp(mail)
+        For kk = 1 To 2
+            If Len(keys(kk)) > 0 Then
+                If m_MyThreadFirst.Exists(keys(kk)) Then
+                    If m_MyThreadFirst(keys(kk)) < rcv Then
+                        If Not REPLY_REQUIRE_MY_RECIPIENT Or ThreadRecipHas(keys(kk), snd) Then
+                            idList = Split(m_MyThreadIds(keys(kk)), "|")
+                            If UBound(idList) >= 1 Then Set FindRepliedMine = GetItemSafe(idList(1))
+                            If FindRepliedMine Is Nothing Then Set FindRepliedMine = mail   ' 내 메일을 못 열어도 표시는 함
+                            GoTo Done
+                        End If
+                    End If
                 End If
             End If
-        End If
+        Next kk
         GoTo Done
     End If
 
