@@ -28,7 +28,8 @@ Attribute VB_Name = "ReplyAlert"
 '
 '  Macros (Alt+F8): MarkDone, ShowReplyList, ShowAttentionList, ShowMyTodoList,
 '    ShowNoReplyList, CheckMyTodo, CheckNoReply, ScanRecentInbox, RecheckReplyMarks, TestSelectedMail,
-'    TestToast, EditMyNames, FixBrokenCategories, ReplyReport, EditPeople, TagPeopleNow
+'    TestToast, EditMyNames, FixBrokenCategories, ReplyReport, EditPeople, TagPeopleNow,
+'    ShowUrgentList, EditKeywords, SetDeadline
 '==========================================================================
 Option Explicit
 
@@ -68,6 +69,17 @@ Private Const FOLLOWUP_DAYS As Long = 3             ' show after N days without 
 Private Const FOLLOWUP_LOOKBACK_DAYS As Long = 30   ' mail sent in the last N days
 Private Const FOLLOWUP_SKIP_MY_REPLIES As Boolean = False ' True = track only new mail / forwards, not my replies (RE:)
 
+' [Urgent] (yellow) - subject / top of body contains a keyword (edit with EditKeywords)
+Private Const URGENT_ENABLED As Boolean = True
+Private Const URGENT_POPUP As Boolean = True        ' silent Windows notification on arrival
+Private Const URGENT_FLAG As Boolean = False        ' True = also flag the mail (today)
+
+' [Deadline] - SetDeadline: find dates in the selected mail and set a due date + reminder
+Private Const DATE_ORDER_MD As Boolean = True       ' 11/12 = Nov 12 (False = 11 Dec)
+Private Const DEADLINE_REMIND_DAYS_BEFORE As Long = 1 ' reminder N days before the due date
+Private Const DEADLINE_REMIND_HOUR As Long = 9      ' reminder time (hour)
+Private Const DEADLINE_AUTO As Boolean = False      ' True = new mail with "by/until/deadline + date" gets a due date automatically
+
 ' [Notifications]
 Private Const REMIND_HOURS As String = "9,14"       ' reminder hours, comma separated ("" = off)
 Private Const SHOW_TOAST As Boolean = True          ' Windows notifications
@@ -96,6 +108,8 @@ Private FOLLOWUP_CATEGORY As String, FOLLOWUP_LIST_NAME As String
 Private DONE_CATEGORY As String
 Private ATTENTION_NAMES As String, ATTENTION_GREETINGS As String
 Private APP_TITLE As String
+Private URGENT_CATEGORY As String, URGENT_LIST_NAME As String
+Private m_UrgentKw As String       ' "|kw|kw|" ()
 Private m_Inited As Boolean
 
 #If VBA7 Then
@@ -200,6 +214,7 @@ Public Sub OnStartup()
         If TODO_ENABLED Then EnsureSearchFolder TODO_LIST_NAME, olFolderInbox, TODO_CATEGORY, olCategoryColorBlue
         If FOLLOWUP_ENABLED Then EnsureSearchFolder FOLLOWUP_LIST_NAME, olFolderSentMail, FOLLOWUP_CATEGORY, olCategoryColorOrange
         EnsurePeopleFolders
+        If URGENT_ENABLED Then EnsureSearchFolder URGENT_LIST_NAME, olFolderInbox, URGENT_CATEGORY, olCategoryColorYellow
     End If
     ' ( STARTUP_DELAY_SECONDS , )
 End Sub
@@ -257,6 +272,7 @@ Public Sub MarkDone()
             RemoveCategoryName itm, ATTENTION_CATEGORY, False
             RemoveCategoryName itm, TODO_CATEGORY, False
             RemoveCategoryName itm, FOLLOWUP_CATEGORY, False
+            RemoveCategoryName itm, URGENT_CATEGORY, False
             If Not CatListHas(itm.Categories, DONE_CATEGORY) Then
                 If Len(itm.Categories) = 0 Then
                     itm.Categories = DONE_CATEGORY
@@ -288,6 +304,11 @@ End Sub
 Public Sub ShowAttentionList()
     EnsureInit
     OpenSearchFolder ATTENTION_LIST_NAME, olFolderInbox, ATTENTION_CATEGORY, olCategoryColorPurple
+End Sub
+
+Public Sub ShowUrgentList()
+    EnsureInit
+    OpenSearchFolder URGENT_LIST_NAME, olFolderInbox, URGENT_CATEGORY, olCategoryColorYellow
 End Sub
 
 Public Sub ShowMyTodoList()
@@ -947,7 +968,7 @@ End Sub
 '==========================================================================
 ' [ ] True. attnMarked = [ ]
 Private Function ProcessMail(ByVal itm As Object, ByVal notify As Boolean, Optional ByRef attnMarked As Boolean) As Boolean
-    Dim mine As Object, lv As Long, handled As Boolean
+    Dim mine As Object, lv As Long, handled As Boolean, urgentKw As String, urgentHit As Boolean, cands As Collection
     On Error GoTo Fail
     attnMarked = False
     If itm.Class <> olMail Then Exit Function
@@ -955,6 +976,31 @@ Private Function ProcessMail(ByVal itm As Object, ByVal notify As Boolean, Optio
     If IsFromMe(itm) Then Exit Function
     If SKIP_AUTO_REPLIES Then
         If IsAutoReply(itm) Then Exit Function
+    End If
+
+    If URGENT_ENABLED Then
+        If Not CatListHas(itm.Categories, URGENT_CATEGORY) Then
+            urgentKw = UrgentMatch(itm)
+            If Len(urgentKw) > 0 Then
+                If Not IsBulkMail(itm) Then
+                    EnsureCategory URGENT_CATEGORY, olCategoryColorYellow
+                    AddCategoryName itm, URGENT_CATEGORY
+                    If URGENT_FLAG Then
+                        itm.MarkAsTask olMarkToday
+                        itm.Save
+                    End If
+                    urgentHit = True
+                End If
+            End If
+        End If
+    End If
+
+    ' [ ] "by / until / deadline / + " ( )
+    If DEADLINE_AUTO And notify Then
+        If GetPropLong(itm.PropertyAccessor, PR_FLAG_STATUS) = 0 Then
+            Set cands = FindDeadlines(itm, True)
+            If cands.Count > 0 Then RegisterDeadline itm, CDate(cands(1)(0))
+        End If
     End If
 
     lv = GetPropLong(itm.PropertyAccessor, PR_LAST_VERB_EXECUTED)
@@ -979,12 +1025,13 @@ Private Function ProcessMail(ByVal itm As Object, ByVal notify As Boolean, Optio
         If Not mine Is Nothing Then
             MarkMail itm
             If FOLLOWUP_ENABLED Then RemoveCategoryName mine, FOLLOWUP_CATEGORY, True
-            If notify Then NotifyReply itm
+            If notify And Not (urgentHit And URGENT_POPUP) Then NotifyReply itm
             ProcessMail = True
         End If
     End If
 
-    If notify And attnMarked And Not ProcessMail And ATTENTION_TOAST Then NotifyAttention itm
+    If notify And attnMarked And Not ProcessMail And Not urgentHit And ATTENTION_TOAST Then NotifyAttention itm
+    If notify And urgentHit And URGENT_POPUP Then NotifyUrgent itm, urgentKw, ProcessMail
     Exit Function
 Fail:
     Debug.Print U("ReplyAlert.ProcessMail \uC624\uB958: ") & Err.Description
@@ -1865,7 +1912,8 @@ End Sub
 ' launchUri :
 ' buttons : "|;|" ( )
 Private Sub ShowToast(ByVal title As String, ByVal line1 As String, ByVal line2 As String, _
-                      Optional ByVal launchUri As String = "", Optional ByVal buttons As String = "")
+                      Optional ByVal launchUri As String = "", Optional ByVal buttons As String = "", _
+                      Optional ByVal silent As Boolean = False)
     Dim xml As String, ps As String, head As String, actions As String
     Dim btn() As String, i As Long, kv() As String
     On Error Resume Next
@@ -1895,7 +1943,7 @@ Private Sub ShowToast(ByVal title As String, ByVal line1 As String, ByVal line2 
           "<text>" & XmlEsc(line1) & "</text>" & _
           "<text>" & XmlEsc(line2) & "</text>" & _
           "</binding></visual>" & actions & _
-          "<audio src=""ms-winsoundevent:Notification.Mail""/></toast>"
+          IIf(silent, "<audio silent=""true""/>", "<audio src=""ms-winsoundevent:Notification.Mail""/>") & "</toast>"
     ps = "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null;" & _
          "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null;" & _
          "$x = New-Object Windows.Data.Xml.Dom.XmlDocument;" & _
@@ -1941,7 +1989,7 @@ End Sub
 Private Sub TryPendingFavorites()
     Dim names As Variant, i As Long
     On Error Resume Next
-    names = Array(LIST_FOLDER_NAME, ATTENTION_LIST_NAME, TODO_LIST_NAME, FOLLOWUP_LIST_NAME)
+    names = Array(LIST_FOLDER_NAME, ATTENTION_LIST_NAME, TODO_LIST_NAME, FOLLOWUP_LIST_NAME, URGENT_LIST_NAME)
     For i = LBound(names) To UBound(names)
         If GetSetting(SETTINGS_APP, "Favorites2", FavKey(CStr(names(i))), "") = "pending" Then
             If AddToFavorites(FindSearchFolder(CStr(names(i)))) Then
@@ -2058,6 +2106,7 @@ Private Function HandlerScript() As String
         "  target = ~<<LIST>>~" & vbCrLf & _
         "  If LCase(uri) = ~attn~ Then target = ~<<ATTN>>~" & vbCrLf & _
         "  If LCase(uri) = ~todo~ Then target = ~<<TODO>>~" & vbCrLf & _
+        "  If LCase(uri) = ~urgent~ Then target = ~<<URGENT>>~" & vbCrLf & _
         "  If LCase(uri) = ~followup~ Then target = ~<<FOLLOWUP>>~" & vbCrLf & _
         "  For Each f In ns.GetDefaultFolder(6).Store.GetSearchFolders" & vbCrLf & _
         "    If f.Name = target Then" & vbCrLf & _
@@ -2078,6 +2127,7 @@ Private Function HandlerScript() As String
     s = Replace(s, "<<LIST>>", Replace(LIST_FOLDER_NAME, "~", ""))
     s = Replace(s, "<<ATTN>>", Replace(ATTENTION_LIST_NAME, "~", ""))
     s = Replace(s, "<<TODO>>", Replace(TODO_LIST_NAME, "~", ""))
+    s = Replace(s, "<<URGENT>>", Replace(URGENT_LIST_NAME, "~", ""))
     s = Replace(s, "<<FOLLOWUP>>", Replace(FOLLOWUP_LIST_NAME, "~", ""))
     HandlerScript = Replace(s, "~", Chr$(34))
 End Function
@@ -2090,6 +2140,8 @@ Private Sub EnsureInit()
     On Error Resume Next
     If m_Inited Then Exit Sub
     APP_TITLE = U("\uBA54\uC77C \uC54C\uB9AC\uBBF8")
+    URGENT_CATEGORY = U("\uAE34\uAE09")
+    URGENT_LIST_NAME = URGENT_CATEGORY
     CATEGORY_NAME = U("\uB0B4 \uBA54\uC77C \uD68C\uC2E0")
     LIST_FOLDER_NAME = CATEGORY_NAME
     ATTENTION_CATEGORY = U("\uB0B4 \uC55E\uC73C\uB85C \uC628 \uBA54\uC77C")
@@ -2104,6 +2156,7 @@ Private Sub EnsureInit()
     ATTENTION_NAMES = LoadNames()
     LoadPeople
     If ATTENTION_AUTO_NAMES Then ATTENTION_NAMES = ATTENTION_NAMES & ";" & AutoNames()
+    LoadKeywords
     m_Inited = True
 End Sub
 
@@ -2240,6 +2293,361 @@ Private Sub LoadPeople()
 End Sub
 
 ' ( TagPeopleNow Outlook )
+' ==========================================================================
+' [] : %APPDATA%\ReplyAlert\keywords.txt ( , EditKeywords )
+' ==========================================================================
+Private Function KeywordsFilePath() As String
+    KeywordsFilePath = Environ$("APPDATA") & "\ReplyAlert\keywords.txt"
+End Function
+
+Private Sub LoadKeywords()
+    Dim txt As String, defaults As String, lines() As String, i As Long, ln As String
+    On Error Resume Next
+    defaults = U("# \uD55C \uC904\uC5D0 \uD558\uB098. \uC81C\uBAA9\uC774\uB098 \uBCF8\uBB38 \uC55E\uBD80\uBD84\uC5D0 \uC788\uC73C\uBA74 [\uAE34\uAE09] \uD45C\uC2DC + \uD31D\uC5C5 (\uB300\uC18C\uBB38\uC790 \uBB34\uC2DC)") & vbCrLf & _
+               U("# \uC601\uC5B4 \uB2E8\uC5B4\uB294 \uB4A4\uC5D0 \uBD99\uB294 \uD615\uD0DC\uB3C4 \uC7A1\uC74C (delay -> delayed, reject -> rejected)") & vbCrLf & _
+               "urgent" & vbCrLf & "asap" & vbCrLf & "immediately" & vbCrLf & "delay" & vbCrLf & "claim" & vbCrLf & _
+               "shortage" & vbCrLf & "reject" & vbCrLf & "cancel" & vbCrLf & _
+               U("\uAE34\uAE09") & vbCrLf & U("\uAE09\uD568") & vbCrLf & U("\uAE09\uAC74") & vbCrLf & U("\uC9C0\uC5F0") & vbCrLf & U("\uBD88\uB7C9") & vbCrLf & U("\uD074\uB808\uC784") & vbCrLf
+    txt = ReadUtf8(KeywordsFilePath())
+    If Len(Trim$(Replace(Replace(txt, vbCr, ""), vbLf, ""))) = 0 Then
+        WriteUtf8 KeywordsFilePath(), defaults
+        txt = defaults
+    End If
+    m_UrgentKw = "|"
+    lines = Split(Replace(txt, vbCr, ""), vbLf)
+    For i = LBound(lines) To UBound(lines)
+        ln = LCase$(Trim$(Replace(lines(i), ChrW(65279), "")))
+        If Len(ln) > 1 And Left$(ln, 1) <> "#" Then m_UrgentKw = m_UrgentKw & ln & "|"
+    Next i
+End Sub
+
+Public Sub EditKeywords()
+    EnsureInit
+    Shell "notepad.exe """ & KeywordsFilePath() & """", vbNormalFocus
+End Sub
+
+Private Function UrgentMatch(ByVal itm As Object) As String
+    Dim s As String, kws() As String, i As Long
+    On Error Resume Next
+    If Len(m_UrgentKw) < 3 Then Exit Function
+    s = LCase$(itm.Subject & vbLf & Left$(NewPartOfBody(itm), 1500))
+    kws = Split(m_UrgentKw, "|")
+    For i = LBound(kws) To UBound(kws)
+        If Len(kws(i)) > 0 Then
+            If KeywordHit(s, kws(i)) Then
+                UrgentMatch = kws(i)
+                Exit Function
+            End If
+        End If
+    Next i
+End Function
+
+' (reclaim X, claims O)
+Private Function KeywordHit(ByVal s As String, ByVal kw As String) As Boolean
+    Dim p As Long, prevChar As String
+    p = InStr(1, s, kw, vbBinaryCompare)
+    Do While p > 0
+        If p > 1 Then prevChar = Mid$(s, p - 1, 1) Else prevChar = ""
+        If Not (LCase$(Left$(kw, 1)) Like "[a-z0-9]") Or Not (prevChar Like "[a-z0-9]") Then
+            KeywordHit = True
+            Exit Function
+        End If
+        p = InStr(p + 1, s, kw, vbBinaryCompare)
+    Loop
+End Function
+
+Private Sub NotifyUrgent(ByVal mail As Object, ByVal kw As String, ByVal isReply As Boolean)
+    Dim openUri As String
+    On Error Resume Next
+    If Not SHOW_TOAST Then Exit Sub
+    openUri = URI_SCHEME & ":open/" & mail.EntryID
+    ShowToast U("\uAE34\uAE09 \uBA54\uC77C") & IIf(isReply, U(" (\uB0B4 \uBA54\uC77C \uD68C\uC2E0)"), ""), mail.SenderName, "[" & kw & "] " & mail.Subject, openUri, _
+              U("\uBA54\uC77C \uC5F4\uAE30|") & openUri & U(";\uAE34\uAE09 \uBAA9\uB85D|") & URI_SCHEME & ":urgent", True
+End Sub
+
+' (From: / : / Original Message)
+Private Function NewPartOfBody(ByVal mail As Object, Optional ByVal maxLen As Long = 6000) As String
+    Dim b As String, lb As String, markers() As String, i As Long, p As Long, best As Long
+    On Error Resume Next
+    b = Left$(mail.Body, maxLen * 2)
+    lb = LCase$(b)
+    markers = Split(vbLf & "from:|" & vbLf & U("\uBCF4\uB0B8 \uC0AC\uB78C:|") & vbLf & "sent:|-----original message|" & vbLf & U("\uBC1C\uC2E0:|________________________________"), "|")
+    best = 0
+    For i = LBound(markers) To UBound(markers)
+        p = InStr(1, lb, markers(i), vbBinaryCompare)
+        If p > 20 Then
+            If best = 0 Or p < best Then best = p
+        End If
+    Next i
+    If best > 0 Then b = Left$(b, best - 1)
+    NewPartOfBody = Left$(b, maxLen)
+End Function
+
+
+' ==========================================================================
+' [] SetDeadline : () +
+' ==========================================================================
+Public Sub SetDeadline()
+    Dim itm As Object, cands As Collection, c As Variant, ans As Long, d As Date, v As String, i As Long
+    EnsureInit
+    On Error Resume Next
+    Set itm = Application.ActiveExplorer.Selection.Item(1)
+    On Error GoTo 0
+    If itm Is Nothing Then
+        MsgBoxU U("\uBA54\uC77C\uC744 \uD558\uB098 \uC120\uD0DD\uD55C \uB4A4 \uC2E4\uD589\uD558\uC138\uC694."), vbExclamation
+        Exit Sub
+    End If
+    If itm.Class <> olMail Then
+        MsgBoxU U("\uC120\uD0DD\uD55C \uD56D\uBAA9\uC774 \uC77C\uBC18 \uBA54\uC77C\uC774 \uC544\uB2D9\uB2C8\uB2E4."), vbExclamation
+        Exit Sub
+    End If
+
+    Set cands = FindDeadlines(itm, False)
+    For i = 1 To cands.Count
+        c = cands(i)
+        ans = MsgBoxU(U("\uC774 \uBA54\uC77C\uC758 \uB9C8\uAC10\uC77C\uC744 ") & FmtDateKo(CDate(c(0))) & U(" \uB85C \uB4F1\uB85D\uD560\uAE4C\uC694?") & vbCrLf & vbCrLf & _
+                      U("\uCC3E\uC740 \uBD80\uBD84: ...") & c(2) & "..." & vbCrLf & vbCrLf & _
+                      U("\uC608 = \uB4F1\uB85D / \uC544\uB2C8\uC624 = \uB2E4\uC74C \uD6C4\uBCF4 / \uCDE8\uC18C = \uADF8\uB9CC"), vbYesNoCancel + vbQuestion)
+        If ans = 6 Then
+            RegisterDeadline itm, CDate(c(0))
+            MsgBoxU U("\uB9C8\uAC10\uC77C ") & FmtDateKo(CDate(c(0))) & U(" \uB85C \uB4F1\uB85D\uD588\uC2B5\uB2C8\uB2E4.") & vbCrLf & ReminderText(CDate(c(0))), vbInformation
+            Exit Sub
+        End If
+        If ans = 2 Then Exit Sub
+        If i >= 5 Then Exit For
+    Next i
+
+    ' (InputBox )
+    v = InputBox(IIf(cands.Count = 0, "No date found in this mail." & vbCrLf, "") & _
+                 "Type the due date (e.g. 11/30, 2026-12-05, Dec 5). Leave empty to cancel.", "ReplyAlert", "")
+    If Len(Trim$(v)) = 0 Then Exit Sub
+    Set cands = FindDatesInText(v, False)
+    If cands.Count = 0 Then
+        MsgBoxU U("\uB0A0\uC9DC\uB97C \uC54C\uC544\uBCFC \uC218 \uC5C6\uC2B5\uB2C8\uB2E4: ") & v, vbExclamation
+        Exit Sub
+    End If
+    d = CDate(cands(1)(0))
+    RegisterDeadline itm, d
+    MsgBoxU U("\uB9C8\uAC10\uC77C ") & FmtDateKo(d) & U(" \uB85C \uB4F1\uB85D\uD588\uC2B5\uB2C8\uB2E4.") & vbCrLf & ReminderText(d), vbInformation
+End Sub
+
+Private Sub RegisterDeadline(ByVal itm As Object, ByVal d As Date)
+    Dim remind As Date
+    On Error Resume Next
+    d = DateValue(d)
+    itm.MarkAsTask olMarkNoDate
+    If d < Date Then itm.TaskStartDate = d Else itm.TaskStartDate = Date
+    itm.TaskDueDate = d
+    itm.FlagRequest = U("\uB9C8\uAC10 ") & Format$(d, "mm/dd")
+    remind = ReminderFor(d)
+    If remind > Now Then
+        itm.ReminderSet = True
+        itm.ReminderTime = remind
+    End If
+    itm.Save
+End Sub
+
+Private Function ReminderFor(ByVal d As Date) As Date
+    ReminderFor = DateAdd("d", -DEADLINE_REMIND_DAYS_BEFORE, d) + TimeSerial(DEADLINE_REMIND_HOUR, 0, 0)
+    If ReminderFor < Now Then ReminderFor = d + TimeSerial(DEADLINE_REMIND_HOUR, 0, 0)
+End Function
+
+Private Function ReminderText(ByVal d As Date) As String
+    Dim r As Date
+    r = ReminderFor(d)
+    If r > Now Then
+        ReminderText = U("\uBBF8\uB9AC \uC54C\uB9BC: ") & FmtDateKo(r) & " " & Format$(r, "hh:nn")
+    Else
+        ReminderText = U("(\uBBF8\uB9AC \uC54C\uB9BC \uC2DC\uAC01\uC774 \uC774\uBBF8 \uC9C0\uB098\uC11C \uC54C\uB9BC\uC740 \uC124\uC815\uD558\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4)")
+    End If
+End Function
+
+Private Function FmtDateKo(ByVal d As Date) As String
+    FmtDateKo = Format$(d, "yyyy-mm-dd") & " (" & Split(U("\uC77C,\uC6D4,\uD654,\uC218,\uBAA9,\uAE08,\uD1A0"), ",")(Weekday(d, vbSunday) - 1) & ")"
+End Function
+
+Private Function FindDeadlines(ByVal itm As Object, ByVal requireKeyword As Boolean) As Collection
+    Dim txt As String
+    On Error Resume Next
+    txt = itm.Subject & vbLf & NewPartOfBody(itm, 4000)
+    Set FindDeadlines = FindDatesInText(txt, requireKeyword)
+End Function
+
+' Array(, , ) ( , )
+Private Function FindDatesInText(ByVal txt As String, ByVal requireKeyword As Boolean) As Collection
+    Dim re As Object, ms As Object, m As Object, pats(1 To 6) As String, k As Long
+    Dim d As Date, score As Long, byDate As Object, ctx As Object, scr As Object, key As Variant, out As New Collection
+    Dim keysArr() As Date, scoreArr() As Long, n As Long, i As Long, j As Long, tD As Date, tS As Long
+    Dim mon As String
+    Set FindDatesInText = out
+    On Error Resume Next
+    Set re = CreateObject("VBScript.RegExp")
+    If re Is Nothing Then Exit Function
+    re.Global = True
+    re.IgnoreCase = True
+    re.MultiLine = True
+    mon = "(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?"
+    pats(1) = "(\d{4})[-./](\d{1,2})[-./](\d{1,2})"
+    pats(2) = "(^|[^A-Za-z0-9/.-])(\d{1,2})/(\d{1,2})(/(\d{2,4}))?(?![A-Za-z0-9/])"
+    pats(3) = "(^|[^A-Za-z0-9])(\d{1,2})(st|nd|rd|th)?[- ]?" & mon & "([- ,]+(\d{4}))?(?![A-Za-z0-9])"
+    pats(4) = "(^|[^A-Za-z])" & mon & "[ -]?(\d{1,2})(st|nd|rd|th)?(?![0-9])(,? ?(\d{4}))?"
+    pats(5) = U("(\d{1,2})\s*\uC6D4\s*(\d{1,2})\s*\uC77C")
+    pats(6) = U("(^|[^A-Za-z])(today|tomorrow|eod|eow|this week|next week|monday|tuesday|wednesday|thursday|friday|mon|tue|wed|thu|fri)(?![A-Za-z])|(\uC624\uB298|\uB0B4\uC77C|\uBAA8\uB808|\uC774\uBC88 \uC8FC|\uC774\uBC88\uC8FC|\uB2E4\uC74C \uC8FC|\uB2E4\uC74C\uC8FC|\uC6D4\uC694\uC77C|\uD654\uC694\uC77C|\uC218\uC694\uC77C|\uBAA9\uC694\uC77C|\uAE08\uC694\uC77C)")
+    Set byDate = NewDict(): Set ctx = NewDict(): Set scr = NewDict()
+
+    For k = 1 To 6
+        re.Pattern = pats(k)
+        Set ms = re.Execute(txt)
+        For Each m In ms
+            d = MatchToDate(k, m)
+            If d >= Date And d <= Date + 366 Then
+                score = 1
+                If DeadlineWordNear(txt, m.FirstIndex + 1, m.Length) Then score = 10
+                If k = 6 And score < 10 Then score = 0          ' "Friday"
+                If score > 0 And (score >= 10 Or Not requireKeyword) Then
+                    key = CDbl(d)
+                    If Not byDate.Exists(key) Then
+                        byDate(key) = d
+                        scr(key) = score
+                        ctx(key) = Snippet(txt, m.FirstIndex + 1, m.Length)
+                    ElseIf score > scr(key) Then
+                        scr(key) = score
+                        ctx(key) = Snippet(txt, m.FirstIndex + 1, m.Length)
+                    End If
+                End If
+            End If
+        Next m
+    Next k
+
+    n = byDate.Count
+    If n = 0 Then Exit Function
+    ReDim keysArr(1 To n)
+    ReDim scoreArr(1 To n)
+    i = 0
+    For Each key In byDate.Keys
+        i = i + 1
+        keysArr(i) = byDate(key)
+        scoreArr(i) = scr(key)
+    Next key
+    For i = 1 To n - 1
+        For j = i + 1 To n
+            If scoreArr(j) > scoreArr(i) Or (scoreArr(j) = scoreArr(i) And keysArr(j) < keysArr(i)) Then
+                tD = keysArr(i): keysArr(i) = keysArr(j): keysArr(j) = tD
+                tS = scoreArr(i): scoreArr(i) = scoreArr(j): scoreArr(j) = tS
+            End If
+        Next j
+    Next i
+    For i = 1 To n
+        out.Add Array(keysArr(i), "", ctx(CDbl(keysArr(i))))
+    Next i
+End Function
+
+Private Function MatchToDate(ByVal k As Long, ByVal m As Object) As Date
+    Dim sm As Object, a As Long, b As Long, y As Long, w As String
+    On Error GoTo Done
+    Set sm = m.SubMatches
+    Select Case k
+        Case 1
+            MatchToDate = MakeDate(CLng(sm(0)), CLng(sm(1)), CLng(sm(2)))
+        Case 2
+            a = CLng(sm(1)): b = CLng(sm(2))
+            If Len(sm(4) & "") > 0 Then y = CLng(sm(4))
+            If DATE_ORDER_MD Then
+                If a > 12 And b <= 12 Then MatchToDate = MakeDate(y, b, a) Else MatchToDate = MakeDate(y, a, b)
+            Else
+                If b > 12 And a <= 12 Then MatchToDate = MakeDate(y, a, b) Else MatchToDate = MakeDate(y, b, a)
+            End If
+        Case 3
+            If Len(sm(5) & "") > 0 Then y = CLng(sm(5))
+            MatchToDate = MakeDate(y, MonthNum(sm(3)), CLng(sm(1)))
+        Case 4
+            If Len(sm(5) & "") > 0 Then y = CLng(sm(5))
+            MatchToDate = MakeDate(y, MonthNum(sm(1)), CLng(sm(2)))
+        Case 5
+            MatchToDate = MakeDate(0, CLng(sm(0)), CLng(sm(1)))
+        Case 6
+            w = LCase$(Trim$(sm(1) & sm(2)))
+            MatchToDate = RelativeDate(w)
+    End Select
+Done:
+End Function
+
+Private Function MonthNum(ByVal s As String) As Long
+    MonthNum = (InStr(1, "janfebmaraprmayjunjulaugsepoctnovdec", Left$(LCase$(s), 3)) + 2) \ 3
+End Function
+
+' ( 60 )
+Private Function MakeDate(ByVal y As Long, ByVal mo As Long, ByVal dd As Long) As Date
+    Dim r As Date
+    On Error GoTo Done
+    If mo < 1 Or mo > 12 Or dd < 1 Or dd > 31 Then Exit Function
+    If y > 0 And y < 100 Then y = y + 2000
+    If y = 0 Then
+        y = Year(Date)
+        r = DateSerial(y, mo, dd)
+        If r < Date - 60 Then y = y + 1
+    End If
+    r = DateSerial(y, mo, dd)
+    If Day(r) <> dd Then Exit Function          ' 2/30
+    MakeDate = r
+Done:
+End Function
+
+Private Function RelativeDate(ByVal w As String) As Date
+    Dim wd As Long, i As Long, names() As String
+    Select Case w
+        Case "today", "eod", U("\uC624\uB298"): RelativeDate = Date: Exit Function
+        Case "tomorrow", U("\uB0B4\uC77C"): RelativeDate = Date + 1: Exit Function
+        Case U("\uBAA8\uB808"): RelativeDate = Date + 2: Exit Function
+        Case "eow", "this week", U("\uC774\uBC88 \uC8FC"), U("\uC774\uBC88\uC8FC"): RelativeDate = NextWeekday(6): Exit Function
+        Case "next week", U("\uB2E4\uC74C \uC8FC"), U("\uB2E4\uC74C\uC8FC"): RelativeDate = NextWeekday(6) + 7: Exit Function
+    End Select
+    names = Split(U("monday|tuesday|wednesday|thursday|friday|mon|tue|wed|thu|fri|\uC6D4\uC694\uC77C|\uD654\uC694\uC77C|\uC218\uC694\uC77C|\uBAA9\uC694\uC77C|\uAE08\uC694\uC77C"), "|")
+    For i = LBound(names) To UBound(names)
+        If w = names(i) Then
+            wd = (i Mod 5) + 2                      ' =2 ... =6 (vbSunday )
+            RelativeDate = NextWeekday(wd)
+            Exit Function
+        End If
+    Next i
+End Function
+
+Private Function NextWeekday(ByVal wd As Long) As Date
+    NextWeekday = Date + ((wd - Weekday(Date, vbSunday) + 7) Mod 7)
+End Function
+
+' 25 / 8
+Private Function DeadlineWordNear(ByVal txt As String, ByVal pos As Long, ByVal ln As Long) As Boolean
+    Dim before As String, after As String, words() As String, i As Long, st As Long
+    st = pos - 25
+    If st < 1 Then st = 1
+    before = LCase$(Mid$(txt, st, pos - st))
+    after = LCase$(Mid$(txt, pos + ln, 8))
+    words = Split("by|until|till|before|deadline|due|no later than|not later than|latest|etd|eta|within", "|")
+    For i = LBound(words) To UBound(words)
+        If KeywordHit(before, words(i)) Then DeadlineWordNear = True: Exit Function
+    Next i
+    words = Split(U("\uB9C8\uAC10|\uAE30\uD55C|\uAE4C\uC9C0|\uC804\uAE4C\uC9C0|\uC774\uC804|\uC774\uB0B4"), "|")
+    For i = LBound(words) To UBound(words)
+        If InStr(1, before, words(i), vbBinaryCompare) > 0 Or InStr(1, after, words(i), vbBinaryCompare) > 0 Then
+            DeadlineWordNear = True
+            Exit Function
+        End If
+    Next i
+End Function
+
+Private Function Snippet(ByVal txt As String, ByVal pos As Long, ByVal ln As Long) As String
+    Dim st As Long, s As String
+    st = pos - 30
+    If st < 1 Then st = 1
+    s = Mid$(txt, st, (pos - st) + ln + 20)
+    s = Replace(Replace(Replace(s, vbCr, " "), vbLf, " "), vbTab, " ")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    Snippet = Trim$(s)
+End Function
+
 Public Sub EditPeople()
     EnsureInit
     Shell "notepad.exe """ & PeopleFilePath() & """", vbNormalFocus
@@ -2714,6 +3122,7 @@ Private Function FavKey(ByVal folderName As String) As String
         Case ATTENTION_LIST_NAME: FavKey = "attn"
         Case TODO_LIST_NAME: FavKey = "todo"
         Case FOLLOWUP_LIST_NAME: FavKey = "followup"
+        Case URGENT_LIST_NAME: FavKey = "urgent"
         Case Else: FavKey = "other"
     End Select
 End Function
