@@ -74,7 +74,8 @@ Private Const SKIP_AUTO_REPLIES As Boolean = True   ' ignore out-of-office repli
 
 ' [Performance] keep Outlook responsive
 Private Const STARTUP_DELAY_SECONDS As Long = 90    ' do nothing for N seconds after Outlook starts
-Private Const SLICE_SECONDS As Single = 1.5         ' work at most N seconds at a time, continue on the next mail
+Private Const SLICE_SECONDS As Single = 0.4         ' work at most N seconds at a time, continue on the next mail
+Private Const BACKGROUND_INTERVAL_SECONDS As Long = 180 ' update the lists at most once every N seconds (reminders still on time)
 
 ' My other addresses (aliases), e.g. "a@company.com;b@company.com"
 Private Const EXTRA_MY_ADDRESSES As String = ""
@@ -156,6 +157,7 @@ Private m_LastTodoScan As Date
 Private m_FuDirty As Boolean
 Private m_FuToastPending As Boolean
 Private m_FuToastCount As Long
+Private m_LastBackground As Date
 
 
 '==========================================================================
@@ -434,8 +436,16 @@ Private Sub RunScheduledChecks()
         GoTo Done
     End If
 
-    ' 1)
+    ' 1) ( )
     If Not ProcessPendingNew() Then GoTo Done
+
+    ' ( Outlook ).
+    slotKey = CurrentRemindSlot()
+    If Len(slotKey) > 0 Then doRemind = (GetSetting(SETTINGS_APP, "Todo", "LastRemind", "") <> slotKey)
+    If Not doRemind And m_LastBackground <> 0 Then
+        If DateDiff("s", m_LastBackground, Now) < BACKGROUND_INTERVAL_SECONDS Then GoTo Done
+    End If
+    m_LastBackground = Now
 
     ' 2) Outlook ( )
     If m_CatchUpPending Then
@@ -594,7 +604,7 @@ End Sub
 
 Private Sub EnsureMaps(ByVal force As Boolean)
     EnsureDicts
-    If force Or m_MapsTime = 0 Or DateDiff("h", m_MapsTime, Now) >= 6 Then
+    If force Or m_MapsTime = 0 Or DateDiff("h", m_MapsTime, Now) >= 24 Then
         BuildMaps
     ElseIf m_SentIdsRefreshAt <> 0 And Now >= m_SentIdsRefreshAt Then
         m_SentIdsRefreshAt = 0
@@ -1051,7 +1061,7 @@ Private Function ScanTodoFolder(ByVal fld As Object, ByRef unreadCount As Long, 
     On Error GoTo Done
     newCut = Now - TODO_MIN_HOURS / 24#
     oldCut = Now - TODO_LOOKBACK_DAYS
-    purgeCut = Now - (MaxL(TODO_LOOKBACK_DAYS, SCAN_DAYS) + 30)
+    purgeCut = Now - (TODO_LOOKBACK_DAYS + 3)
 
     Set tbl = fld.GetTable
     tbl.Columns.RemoveAll
@@ -1272,7 +1282,7 @@ Private Function ScanFollowups(ByRef waitingTotal As Long) As Long
     EnsureDicts
     newCut = Now - FOLLOWUP_DAYS
     oldCut = Now - FOLLOWUP_LOOKBACK_DAYS
-    purgeCut = oldCut - 90
+    purgeCut = oldCut - 3
     EnsureCategory FOLLOWUP_CATEGORY, olCategoryColorOrange
 
     Set tbl = Application.Session.GetDefaultFolder(olFolderSentMail).GetTable
