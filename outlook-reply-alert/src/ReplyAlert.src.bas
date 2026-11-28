@@ -622,6 +622,9 @@ Private Function ProcessPendingNew() As Boolean
         m_Seen(eid) = True
         Set itm = GetItemSafe(eid)
         If Not itm Is Nothing Then
+            If MovedAway(itm) Then Set itm = Nothing      ' 중복으로 지웠거나 sleeppm 폴더로 옮긴 메일
+        End If
+        If Not itm Is Nothing Then
             UpdateMapsWithItem itm
             TagPeople itm
             marked = ProcessMail(itm, Not m_PendingSummary, attn)
@@ -965,12 +968,27 @@ Private Sub AddSubFolders(ByVal fld As Object, ByVal c As Collection, ByVal dept
     On Error Resume Next
     If depth > 5 Then Exit Sub
     For Each child In fld.Folders
-        If child.DefaultItemType = olMailItem Then
+        If child.DefaultItemType = olMailItem And child.EntryID <> SkipFolderId() Then
             c.Add child
             AddSubFolders child, c, depth + 1
         End If
     Next child
 End Sub
+
+' DupRemover 가 sleeppm 메일을 옮기는 폴더 (볼 필요 없는 메일이라 검사하지 않음)
+Private Function SkipFolderId() As String
+    SkipFolderId = GetSetting(SETTINGS_APP, "SleepFilter", "FolderId", "-")
+End Function
+
+' 새 메일이 이미 다른 곳(지운 편지함 / sleeppm 폴더)으로 옮겨졌으면 True
+Private Function MovedAway(ByVal itm As Object) As Boolean
+    Dim pid As String
+    On Error Resume Next
+    pid = itm.Parent.EntryID
+    If Len(pid) = 0 Then Exit Function
+    If pid = SkipFolderId() Then MovedAway = True: Exit Function
+    If pid = Application.Session.GetDefaultFolder(olFolderDeletedItems).EntryID Then MovedAway = True
+End Function
 
 
 '==========================================================================
