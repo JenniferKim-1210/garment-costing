@@ -2018,12 +2018,21 @@ Private Sub TryPendingFavorites()
     On Error Resume Next
     names = Array(LIST_FOLDER_NAME, ATTENTION_LIST_NAME, TODO_LIST_NAME, FOLLOWUP_LIST_NAME, URGENT_LIST_NAME)
     For i = LBound(names) To UBound(names)
-        If GetSetting(SETTINGS_APP, "Favorites2", FavKey(CStr(names(i))), "") = "pending" Then
-            If AddToFavorites(FindSearchFolder(CStr(names(i)))) Then
-                SaveSetting SETTINGS_APP, "Favorites2", FavKey(CStr(names(i))), "done"
-            End If
-        End If
+        TryOneFavorite CStr(names(i))
     Next i
+    For i = 1 To m_PeopleCount
+        TryOneFavorite m_PeopleLabel(i)
+    Next i
+End Sub
+
+Private Sub TryOneFavorite(ByVal nm As String)
+    On Error Resume Next
+    If Len(nm) = 0 Then Exit Sub
+    If GetSetting(SETTINGS_APP, "Favorites2", FavKey(nm), "") = "pending" Then
+        If AddToFavorites(FindSearchFolder(nm)) Then
+            SaveSetting SETTINGS_APP, "Favorites2", FavKey(nm), "done"
+        End If
+    End If
 End Sub
 
 Private Sub OpenSearchFolder(ByVal folderName As String, ByVal scopeFolderType As Long, _
@@ -3099,9 +3108,13 @@ Private Sub EnsurePeopleFolders()
             Set sch = Application.AdvancedSearch(scope, flt, True, m_PeopleLabel(i))
             Set sf = Nothing
             Set sf = sch.Save(m_PeopleLabel(i))
-            AddToFavorites sf
+        End If
+        ' (Outlook , )
+        If GetSetting(SETTINGS_APP, "Favorites2", FavKey(m_PeopleLabel(i)), "") = "" Then
+            SaveSetting SETTINGS_APP, "Favorites2", FavKey(m_PeopleLabel(i)), "pending"
         End If
     Next i
+    TryPendingFavorites
 End Sub
 
 Public Sub TagPeopleNow()
@@ -3444,8 +3457,16 @@ Private Function FavKey(ByVal folderName As String) As String
         Case TODO_LIST_NAME: FavKey = "todo"
         Case FOLLOWUP_LIST_NAME: FavKey = "followup"
         Case URGENT_LIST_NAME: FavKey = "urgent"
-        Case Else: FavKey = "other"
+        Case Else: FavKey = "p_" & HexName(folderName)   ' ( 16)
     End Select
+End Function
+
+Private Function HexName(ByVal s As String) As String
+    Dim i As Long, out As String
+    For i = 1 To Len(s)
+        out = out & Right$("000" & Hex$(AscW(Mid$(s, i, 1)) And &HFFFF&), 4)
+    Next i
+    HexName = out
 End Function
 
 ' ( Windows ) /
