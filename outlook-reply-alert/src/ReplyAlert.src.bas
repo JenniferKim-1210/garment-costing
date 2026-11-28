@@ -520,8 +520,8 @@ Private Sub RunScheduledChecks()
         GoTo Done
     End If
     ' 0-2) 예전 규칙으로 잘못 붙은 [내 메일 회신] 표시 다시 확인 (한 번만)
-    If GetSetting(SETTINGS_APP, "Cleanup", "ReplyRecheck2", "") = "" Then
-        SaveSetting SETTINGS_APP, "Cleanup", "ReplyRecheck2", "done"
+    If GetSetting(SETTINGS_APP, "Cleanup", "ReplyRecheck3", "") = "" Then
+        SaveSetting SETTINGS_APP, "Cleanup", "ReplyRecheck3", "done"
         RecheckReplyMarksCore
         GoTo Done
     End If
@@ -1123,6 +1123,8 @@ Private Function FindRepliedMine(ByVal mail As Object) As Object
     Dim key As String, f As Object, conv As String, refIds As Collection
     On Error GoTo Done
     EnsureMaps False
+    ' 해리 과장 등 사람별 목록의 스레드는 그 목록에서만 봄
+    If InPeopleThread(mail) Then GoTo Done
     ' 내가 받는 사람(To)으로 들어 있는 메일만 (참조(CC)만 있으면 제외)
     If REPLY_REQUIRE_TO Then
         If Not IsToMe(mail) Then GoTo Done
@@ -3021,7 +3023,7 @@ Private Sub PeopleScanFolder(ByVal fld As Object, ByVal cutoff As Date, ByVal ro
                 If Len(topic) = 0 Then topic = VStr(AV(arr, r, C_SUBJ))
                 topic = NormTopic(topic)
                 For i = 1 To m_PeopleCount
-                    If PersonHit(sHay, i) Or PersonHit(tHay, i) Then AddThread i, conv, topic
+                    If PersonHit(sHay, i) Then AddThread i, conv, topic      ' 그 사람이 보낸 메일이 있는 스레드
                 Next i
                 If Not rows Is Nothing Then rows.Add Array(VStr(AV(arr, r, C_EID)), VStr(AV(arr, r, C_CATS)), conv, topic)
             End If
@@ -3045,13 +3047,64 @@ Private Sub TagPeople(ByVal itm As Object)
     If Len(topic) = 0 Then topic = itm.Subject
     topic = NormTopic(topic)
     For i = 1 To m_PeopleCount
-        If PersonHit(sHay, i) Or PersonHit(tHay, i) Then AddThread i, conv, topic
+        If PersonHit(sHay, i) Then
+            ' 그 사람이 처음 끼어든 스레드면, 앞서 주고받은 메일도 모두 그 사람 목록으로
+            If Not InThread(i, conv, topic) Then
+                AddThread i, conv, topic
+                TagConversation itm, i
+            End If
+        End If
         If InThread(i, conv, topic) Then
             EnsureCategory m_PeopleLabel(i), olCategoryColorGreen
             AddCategoryName itm, m_PeopleLabel(i)
+            If CatListHas(itm.Categories, CATEGORY_NAME) Then RemoveCategoryName itm, CATEGORY_NAME, True
         End If
     Next i
 End Sub
+
+' 같은 대화(받은 편지함, 보낸 편지함, 하위 폴더 모두)의 메일에 사람 범주를 붙이고 [내 메일 회신] 표시는 뗌
+Private Sub TagConversation(ByVal itm As Object, ByVal idx As Long)
+    Dim cv As Object, tbl As Object, row As Object, m As Object, n As Long
+    On Error Resume Next
+    Set cv = itm.GetConversation
+    If cv Is Nothing Then Exit Sub
+    Set tbl = cv.GetTable
+    If tbl Is Nothing Then Exit Sub
+    EnsureCategory m_PeopleLabel(idx), olCategoryColorGreen
+    Do Until tbl.EndOfTable
+        Set row = tbl.GetNextRow
+        If row Is Nothing Then Exit Do
+        Set m = Nothing
+        Set m = GetItemSafe(row("EntryID"))
+        If Not m Is Nothing Then
+            If m.Class = olMail Then
+                AddCategoryName m, m_PeopleLabel(idx)
+                If CatListHas(m.Categories, CATEGORY_NAME) Then RemoveCategoryName m, CATEGORY_NAME, True
+            End If
+        End If
+        n = n + 1
+        If n > 200 Then Exit Do
+    Loop
+End Sub
+
+' 사람별 목록(해리 과장 등)에 들어가는 스레드의 메일이면 True -> [내 메일 회신] 에는 넣지 않음
+Private Function InPeopleThread(ByVal itm As Object) As Boolean
+    Dim conv As String, topic As String, i As Long, sHay As String
+    On Error Resume Next
+    If m_PeopleCount = 0 Then Exit Function
+    If Not m_PeopleSetsReady Then BuildPeopleSets 60, Nothing
+    sHay = LCase$(itm.SenderName & "|" & GetSenderSmtp(itm))
+    conv = SafeConvId(itm)
+    topic = itm.ConversationTopic
+    If Len(topic) = 0 Then topic = itm.Subject
+    topic = NormTopic(topic)
+    For i = 1 To m_PeopleCount
+        If PersonHit(sHay, i) Or InThread(i, conv, topic) Then
+            InPeopleThread = True
+            Exit Function
+        End If
+    Next i
+End Function
 
 ' 사람별 검색 폴더 (받은 편지함 + 보낸 편지함, 하위 폴더 포함)
 Private Sub EnsurePeopleFolders()
@@ -3076,7 +3129,7 @@ End Sub
 ' 지난 메일에 사람별 범주 붙이기 (받은 편지함 + 하위 폴더 + 보낸 편지함)
 Public Sub TagPeopleNow()
     Dim v As String, days As Long, rows As New Collection, rw As Variant, i As Long, msg As String
-    Dim want As Boolean, has As Boolean, itm As Object, nAdd As Long, nDel As Long, cnt() As Long
+    Dim want As Boolean, has As Boolean, itm As Object, nAdd As Long, nDel As Long, cnt() As Long, anyWant As Boolean, nRed As Long
     EnsureInit
     LoadPeople
     If m_PeopleCount = 0 Then
@@ -3099,8 +3152,10 @@ Public Sub TagPeopleNow()
     ReDim cnt(1 To m_PeopleCount)
     For Each rw In rows
         Set itm = Nothing
+        anyWant = False
         For i = 1 To m_PeopleCount
             want = InThread(i, CStr(rw(2)), CStr(rw(3)))
+            If want Then anyWant = True
             has = CatListHas(CStr(rw(1)), m_PeopleLabel(i))
             If want Then cnt(i) = cnt(i) + 1
             If want <> has Then
@@ -3117,12 +3172,20 @@ Public Sub TagPeopleNow()
                 End If
             End If
         Next i
+        ' 사람별 목록에 들어가는 메일은 [내 메일 회신] 에서 뺌
+        If anyWant And CatListHas(CStr(rw(1)), CATEGORY_NAME) Then
+            If itm Is Nothing Then Set itm = GetItemSafe(CStr(rw(0)))
+            If Not itm Is Nothing Then
+                RemoveCategoryName itm, CATEGORY_NAME, True
+                nRed = nRed + 1
+            End If
+        End If
         If (nAdd + nDel) Mod 20 = 1 Then DoEvents
     Next rw
     On Error GoTo 0
     m_Busy = False
-    msg = "최근 " & days & "일, 주고받은 스레드 기준으로 정리했습니다." & vbCrLf & _
-          "(새로 표시 " & nAdd & "건, 표시 해제 " & nDel & "건)" & vbCrLf
+    msg = "최근 " & days & "일, 그 사람이 보낸 메일이 있는 스레드 기준으로 정리했습니다." & vbCrLf & _
+          "(새로 표시 " & nAdd & "건, 표시 해제 " & nDel & "건, [" & CATEGORY_NAME & "] 에서 뺀 메일 " & nRed & "건)" & vbCrLf
     For i = 1 To m_PeopleCount
         msg = msg & vbCrLf & "  - " & m_PeopleLabel(i) & ": " & cnt(i) & "건"
     Next i

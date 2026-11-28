@@ -514,8 +514,8 @@ Private Sub RunScheduledChecks()
         GoTo Done
     End If
     ' 0-2) [ ] ( )
-    If GetSetting(SETTINGS_APP, "Cleanup", "ReplyRecheck2", "") = "" Then
-        SaveSetting SETTINGS_APP, "Cleanup", "ReplyRecheck2", "done"
+    If GetSetting(SETTINGS_APP, "Cleanup", "ReplyRecheck3", "") = "" Then
+        SaveSetting SETTINGS_APP, "Cleanup", "ReplyRecheck3", "done"
         RecheckReplyMarksCore
         GoTo Done
     End If
@@ -1109,6 +1109,7 @@ Private Function FindRepliedMine(ByVal mail As Object) As Object
     Dim key As String, f As Object, conv As String, refIds As Collection
     On Error GoTo Done
     EnsureMaps False
+    If InPeopleThread(mail) Then GoTo Done
     ' (To) ((CC) )
     If REPLY_REQUIRE_TO Then
         If Not IsToMe(mail) Then GoTo Done
@@ -2968,7 +2969,7 @@ Private Sub PeopleScanFolder(ByVal fld As Object, ByVal cutoff As Date, ByVal ro
                 If Len(topic) = 0 Then topic = VStr(AV(arr, r, C_SUBJ))
                 topic = NormTopic(topic)
                 For i = 1 To m_PeopleCount
-                    If PersonHit(sHay, i) Or PersonHit(tHay, i) Then AddThread i, conv, topic
+                    If PersonHit(sHay, i) Then AddThread i, conv, topic
                 Next i
                 If Not rows Is Nothing Then rows.Add Array(VStr(AV(arr, r, C_EID)), VStr(AV(arr, r, C_CATS)), conv, topic)
             End If
@@ -2991,13 +2992,62 @@ Private Sub TagPeople(ByVal itm As Object)
     If Len(topic) = 0 Then topic = itm.Subject
     topic = NormTopic(topic)
     For i = 1 To m_PeopleCount
-        If PersonHit(sHay, i) Or PersonHit(tHay, i) Then AddThread i, conv, topic
+        If PersonHit(sHay, i) Then
+            If Not InThread(i, conv, topic) Then
+                AddThread i, conv, topic
+                TagConversation itm, i
+            End If
+        End If
         If InThread(i, conv, topic) Then
             EnsureCategory m_PeopleLabel(i), olCategoryColorGreen
             AddCategoryName itm, m_PeopleLabel(i)
+            If CatListHas(itm.Categories, CATEGORY_NAME) Then RemoveCategoryName itm, CATEGORY_NAME, True
         End If
     Next i
 End Sub
+
+Private Sub TagConversation(ByVal itm As Object, ByVal idx As Long)
+    Dim cv As Object, tbl As Object, row As Object, m As Object, n As Long
+    On Error Resume Next
+    Set cv = itm.GetConversation
+    If cv Is Nothing Then Exit Sub
+    Set tbl = cv.GetTable
+    If tbl Is Nothing Then Exit Sub
+    EnsureCategory m_PeopleLabel(idx), olCategoryColorGreen
+    Do Until tbl.EndOfTable
+        Set row = tbl.GetNextRow
+        If row Is Nothing Then Exit Do
+        Set m = Nothing
+        Set m = GetItemSafe(row("EntryID"))
+        If Not m Is Nothing Then
+            If m.Class = olMail Then
+                AddCategoryName m, m_PeopleLabel(idx)
+                If CatListHas(m.Categories, CATEGORY_NAME) Then RemoveCategoryName m, CATEGORY_NAME, True
+            End If
+        End If
+        n = n + 1
+        If n > 200 Then Exit Do
+    Loop
+End Sub
+
+' ( ) True -> [ ]
+Private Function InPeopleThread(ByVal itm As Object) As Boolean
+    Dim conv As String, topic As String, i As Long, sHay As String
+    On Error Resume Next
+    If m_PeopleCount = 0 Then Exit Function
+    If Not m_PeopleSetsReady Then BuildPeopleSets 60, Nothing
+    sHay = LCase$(itm.SenderName & "|" & GetSenderSmtp(itm))
+    conv = SafeConvId(itm)
+    topic = itm.ConversationTopic
+    If Len(topic) = 0 Then topic = itm.Subject
+    topic = NormTopic(topic)
+    For i = 1 To m_PeopleCount
+        If PersonHit(sHay, i) Or InThread(i, conv, topic) Then
+            InPeopleThread = True
+            Exit Function
+        End If
+    Next i
+End Function
 
 Private Sub EnsurePeopleFolders()
     Dim i As Long, scope As String, sch As Object, sf As Object, flt As String
@@ -3020,7 +3070,7 @@ End Sub
 
 Public Sub TagPeopleNow()
     Dim v As String, days As Long, rows As New Collection, rw As Variant, i As Long, msg As String
-    Dim want As Boolean, has As Boolean, itm As Object, nAdd As Long, nDel As Long, cnt() As Long
+    Dim want As Boolean, has As Boolean, itm As Object, nAdd As Long, nDel As Long, cnt() As Long, anyWant As Boolean, nRed As Long
     EnsureInit
     LoadPeople
     If m_PeopleCount = 0 Then
@@ -3043,8 +3093,10 @@ Public Sub TagPeopleNow()
     ReDim cnt(1 To m_PeopleCount)
     For Each rw In rows
         Set itm = Nothing
+        anyWant = False
         For i = 1 To m_PeopleCount
             want = InThread(i, CStr(rw(2)), CStr(rw(3)))
+            If want Then anyWant = True
             has = CatListHas(CStr(rw(1)), m_PeopleLabel(i))
             If want Then cnt(i) = cnt(i) + 1
             If want <> has Then
@@ -3061,12 +3113,19 @@ Public Sub TagPeopleNow()
                 End If
             End If
         Next i
+        If anyWant And CatListHas(CStr(rw(1)), CATEGORY_NAME) Then
+            If itm Is Nothing Then Set itm = GetItemSafe(CStr(rw(0)))
+            If Not itm Is Nothing Then
+                RemoveCategoryName itm, CATEGORY_NAME, True
+                nRed = nRed + 1
+            End If
+        End If
         If (nAdd + nDel) Mod 20 = 1 Then DoEvents
     Next rw
     On Error GoTo 0
     m_Busy = False
-    msg = U("\uCD5C\uADFC ") & days & U("\uC77C, \uC8FC\uACE0\uBC1B\uC740 \uC2A4\uB808\uB4DC \uAE30\uC900\uC73C\uB85C \uC815\uB9AC\uD588\uC2B5\uB2C8\uB2E4.") & vbCrLf & _
-          U("(\uC0C8\uB85C \uD45C\uC2DC ") & nAdd & U("\uAC74, \uD45C\uC2DC \uD574\uC81C ") & nDel & U("\uAC74)") & vbCrLf
+    msg = U("\uCD5C\uADFC ") & days & U("\uC77C, \uADF8 \uC0AC\uB78C\uC774 \uBCF4\uB0B8 \uBA54\uC77C\uC774 \uC788\uB294 \uC2A4\uB808\uB4DC \uAE30\uC900\uC73C\uB85C \uC815\uB9AC\uD588\uC2B5\uB2C8\uB2E4.") & vbCrLf & _
+          U("(\uC0C8\uB85C \uD45C\uC2DC ") & nAdd & U("\uAC74, \uD45C\uC2DC \uD574\uC81C ") & nDel & U("\uAC74, [") & CATEGORY_NAME & U("] \uC5D0\uC11C \uBE80 \uBA54\uC77C ") & nRed & U("\uAC74)") & vbCrLf
     For i = 1 To m_PeopleCount
         msg = msg & vbCrLf & "  - " & m_PeopleLabel(i) & ": " & cnt(i) & U("\uAC74")
     Next i
