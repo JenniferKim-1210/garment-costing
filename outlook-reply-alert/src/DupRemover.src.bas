@@ -350,11 +350,16 @@ Private Function ShouldMove(ByVal itm As Object, ByRef why As String) As Boolean
     For Each r In itm.Recipients
         If r.Type <> olBCC Then
             a = RecipKey(r)
+            If IsMe(a) Then toMe = True
+            a = Replace(a, " ", "")
             If InStr(1, a, MOVE_GROUP, vbBinaryCompare) > 0 Then hasGroup = True
             If InStr(1, a, SKIP_GROUP, vbBinaryCompare) > 0 Then hasSkip = True
-            If IsMe(a) Then toMe = True
         End If
     Next r
+    ' 받는 사람/참조 표시 글자로도 확인 (그룹 이름이 "Sleep PM" 처럼 보이는 경우)
+    a = LCase$(Replace(itm.To & ";" & itm.CC, " ", ""))
+    If InStr(1, a, MOVE_GROUP, vbBinaryCompare) > 0 Then hasGroup = True
+    If InStr(1, a, SKIP_GROUP, vbBinaryCompare) > 0 Then hasSkip = True
     If Not hasGroup Then why = "받는 사람에 " & MOVE_GROUP & " 이 없음": Exit Function
     If hasSkip Then why = SKIP_GROUP & " 도 받는 사람에 있음": Exit Function
     If toMe Then why = "내 주소가 받는 사람/참조에 직접 있음": Exit Function
@@ -376,8 +381,7 @@ Private Function SenderKey(ByVal itm As Object) As String
             If Not eu Is Nothing Then s = eu.PrimarySmtpAddress
         End If
     End If
-    If Len(s) = 0 Then s = itm.SenderEmailAddress
-    SenderKey = "|" & LCase$(Trim$(s)) & "|" & LCase$(Trim$(itm.SenderName)) & "|"
+    SenderKey = "|" & LCase$(Trim$(s)) & "|" & LCase$(Trim$(itm.SenderName)) & "|" & LCase$(Trim$(itm.SenderEmailAddress)) & "|"
 End Function
 
 Private Function SenderListed(ByVal key As String) As Boolean
@@ -410,7 +414,7 @@ Private Function RecipKey(ByVal r As Object) As String
         End If
     End If
     If Len(s) = 0 Then s = r.Address
-    RecipKey = LCase$(Trim$(s)) & "|" & LCase$(Trim$(r.Name))
+    RecipKey = LCase$(Trim$(s)) & "|" & LCase$(Trim$(r.Name)) & "|" & LCase$(Trim$(r.Address))
 End Function
 
 Private Function IsMe(ByVal rk As String) As Boolean
@@ -469,13 +473,28 @@ Private Function ParseSenders(ByVal txt As String) As String
     lst = "|"
     For i = LBound(lines) To UBound(lines)
         ln = Trim$(Replace(Replace(lines(i), ChrW(65279), ""), vbTab, " "))
-        a = InStr(1, ln, "<")
-        b = InStr(1, ln, ">")
-        If a > 0 And b > a Then ln = Mid$(ln, a + 1, b - a - 1)
-        ln = LCase$(Trim$(ln))
-        If Len(ln) > 2 And Left$(ln, 1) <> "#" Then lst = lst & Replace(ln, "|", "") & "|"
+        If Left$(ln, 1) <> "#" And Len(ln) > 2 Then
+            a = InStr(1, ln, "<")
+            b = InStr(1, ln, ">")
+            If a > 0 And b > a Then
+                lst = AddSender(lst, Left$(ln, a - 1))                ' 이름
+                lst = AddSender(lst, Mid$(ln, a + 1, b - a - 1))      ' 주소
+            Else
+                lst = AddSender(lst, ln)
+            End If
+        End If
     Next i
     ParseSenders = lst
+End Function
+
+' 목록에 추가. 메일 주소면 @ 앞부분도 (Exchange 내부 주소로 들어온 메일도 찾도록)
+Private Function AddSender(ByVal lst As String, ByVal v As String) As String
+    Dim p As Long
+    v = LCase$(Trim$(Replace(v, "|", "")))
+    If Len(v) > 2 Then lst = lst & v & "|"
+    p = InStr(1, v, "@")
+    If p > 4 Then lst = lst & Left$(v, p - 1) & "|"
+    AddSender = lst
 End Function
 
 ' --- 옮길 폴더 ---
@@ -543,8 +562,9 @@ End Function
 ' 받은 편지함에 이미 들어와 있는 sleeppm 단독 메일을 한 번에 옮김
 Public Sub MoveSleeppmNow()
     Dim v As String, days As Long, fld As Object, tbl As Object, arr As Variant, r As Long, t As Date, cutoff As Date
-    Dim C_EID As Long, C_CLASS As Long, C_RCV As Long, C_NAME As Long, C_SND As Long
+    Dim C_EID As Long, C_CLASS As Long, C_RCV As Long, C_NAME As Long, C_SND As Long, C_SADDR As Long
     Dim cand As New Collection, eid As Variant, itm As Object, why As String, toMove As New Collection, n As Long
+    Dim reasons As Object, k As Variant, msg As String
     Init
     LoadSenders
     If Len(m_Senders) <= 1 Then
@@ -569,6 +589,7 @@ Public Sub MoveSleeppmNow()
     C_RCV = AddCol(tbl, "ReceivedTime")
     C_NAME = AddCol(tbl, "SenderName")
     C_SND = AddCol(tbl, PR_SENDER_SMTP_ADDRESS)
+    C_SADDR = AddCol(tbl, "SenderEmailAddress")
     tbl.Sort "[ReceivedTime]", True
     Do Until tbl.EndOfTable
         arr = tbl.GetArray(TABLE_CHUNK)
@@ -577,7 +598,8 @@ Public Sub MoveSleeppmNow()
             t = VDate(AV(arr, r, C_RCV))
             If t <> 0 And t < cutoff Then GoTo Scanned
             If Left$(LCase$(VStr(AV(arr, r, C_CLASS))), 8) = "ipm.note" Then
-                If SenderListed("|" & LCase$(VStr(AV(arr, r, C_SND))) & "|" & LCase$(VStr(AV(arr, r, C_NAME))) & "|") Then
+                If SenderListed("|" & LCase$(VStr(AV(arr, r, C_SND))) & "|" & LCase$(VStr(AV(arr, r, C_NAME))) & "|" & _
+                                LCase$(VStr(AV(arr, r, C_SADDR))) & "|") Then
                     cand.Add VStr(AV(arr, r, C_EID))
                 End If
             End If
@@ -586,11 +608,16 @@ Public Sub MoveSleeppmNow()
     Loop
 Scanned:
     ' 2) 받는 사람 확인
+    Set reasons = CreateObject("Scripting.Dictionary")
     For Each eid In cand
         Set itm = Nothing
         Set itm = GetItemSafe(CStr(eid))
         If Not itm Is Nothing Then
-            If ShouldMove(itm, why) Then toMove.Add CStr(eid)
+            If ShouldMove(itm, why) Then
+                toMove.Add CStr(eid)
+            Else
+                reasons(why) = reasons(why) + 1
+            End If
         End If
         n = n + 1
         If n Mod 20 = 0 Then DoEvents
@@ -598,7 +625,13 @@ Scanned:
     On Error GoTo 0
 
     If toMove.Count = 0 Then
-        MsgBoxU "최근 " & days & "일 받은 편지함에 옮길 " & MOVE_GROUP & " 메일이 없습니다.", vbInformation
+        msg = "최근 " & days & "일 받은 편지함에 옮길 " & MOVE_GROUP & " 메일이 없습니다." & vbCrLf & vbCrLf & _
+              "목록에 있는 사람이 보낸 메일: " & cand.Count & "건"
+        For Each k In reasons.Keys
+            msg = msg & vbCrLf & "  - " & k & ": " & reasons(k) & "건"
+        Next k
+        If cand.Count = 0 Then msg = msg & vbCrLf & vbCrLf & "(보낸 사람을 못 찾았습니다. 메일 하나를 선택하고 TestSleeppm 을 실행해 결과를 알려 주세요)"
+        MsgBoxU msg, vbInformation
         Exit Sub
     End If
     If MsgBoxU("최근 " & days & "일 받은 편지함에서 " & MOVE_GROUP & " 으로만 받은 메일 " & toMove.Count & "건을 찾았습니다." & vbCrLf & vbCrLf & _

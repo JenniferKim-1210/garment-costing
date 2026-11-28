@@ -344,11 +344,16 @@ Private Function ShouldMove(ByVal itm As Object, ByRef why As String) As Boolean
     For Each r In itm.Recipients
         If r.Type <> olBCC Then
             a = RecipKey(r)
+            If IsMe(a) Then toMe = True
+            a = Replace(a, " ", "")
             If InStr(1, a, MOVE_GROUP, vbBinaryCompare) > 0 Then hasGroup = True
             If InStr(1, a, SKIP_GROUP, vbBinaryCompare) > 0 Then hasSkip = True
-            If IsMe(a) Then toMe = True
         End If
     Next r
+    ' / ( "Sleep PM" )
+    a = LCase$(Replace(itm.To & ";" & itm.CC, " ", ""))
+    If InStr(1, a, MOVE_GROUP, vbBinaryCompare) > 0 Then hasGroup = True
+    If InStr(1, a, SKIP_GROUP, vbBinaryCompare) > 0 Then hasSkip = True
     If Not hasGroup Then why = U("\uBC1B\uB294 \uC0AC\uB78C\uC5D0 ") & MOVE_GROUP & U(" \uC774 \uC5C6\uC74C"): Exit Function
     If hasSkip Then why = SKIP_GROUP & U(" \uB3C4 \uBC1B\uB294 \uC0AC\uB78C\uC5D0 \uC788\uC74C"): Exit Function
     If toMe Then why = U("\uB0B4 \uC8FC\uC18C\uAC00 \uBC1B\uB294 \uC0AC\uB78C/\uCC38\uC870\uC5D0 \uC9C1\uC811 \uC788\uC74C"): Exit Function
@@ -369,8 +374,7 @@ Private Function SenderKey(ByVal itm As Object) As String
             If Not eu Is Nothing Then s = eu.PrimarySmtpAddress
         End If
     End If
-    If Len(s) = 0 Then s = itm.SenderEmailAddress
-    SenderKey = "|" & LCase$(Trim$(s)) & "|" & LCase$(Trim$(itm.SenderName)) & "|"
+    SenderKey = "|" & LCase$(Trim$(s)) & "|" & LCase$(Trim$(itm.SenderName)) & "|" & LCase$(Trim$(itm.SenderEmailAddress)) & "|"
 End Function
 
 Private Function SenderListed(ByVal key As String) As Boolean
@@ -402,7 +406,7 @@ Private Function RecipKey(ByVal r As Object) As String
         End If
     End If
     If Len(s) = 0 Then s = r.Address
-    RecipKey = LCase$(Trim$(s)) & "|" & LCase$(Trim$(r.Name))
+    RecipKey = LCase$(Trim$(s)) & "|" & LCase$(Trim$(r.Name)) & "|" & LCase$(Trim$(r.Address))
 End Function
 
 Private Function IsMe(ByVal rk As String) As Boolean
@@ -459,13 +463,28 @@ Private Function ParseSenders(ByVal txt As String) As String
     lst = "|"
     For i = LBound(lines) To UBound(lines)
         ln = Trim$(Replace(Replace(lines(i), ChrW(65279), ""), vbTab, " "))
-        a = InStr(1, ln, "<")
-        b = InStr(1, ln, ">")
-        If a > 0 And b > a Then ln = Mid$(ln, a + 1, b - a - 1)
-        ln = LCase$(Trim$(ln))
-        If Len(ln) > 2 And Left$(ln, 1) <> "#" Then lst = lst & Replace(ln, "|", "") & "|"
+        If Left$(ln, 1) <> "#" And Len(ln) > 2 Then
+            a = InStr(1, ln, "<")
+            b = InStr(1, ln, ">")
+            If a > 0 And b > a Then
+                lst = AddSender(lst, Left$(ln, a - 1))
+                lst = AddSender(lst, Mid$(ln, a + 1, b - a - 1))
+            Else
+                lst = AddSender(lst, ln)
+            End If
+        End If
     Next i
     ParseSenders = lst
+End Function
+
+' . @ (Exchange )
+Private Function AddSender(ByVal lst As String, ByVal v As String) As String
+    Dim p As Long
+    v = LCase$(Trim$(Replace(v, "|", "")))
+    If Len(v) > 2 Then lst = lst & v & "|"
+    p = InStr(1, v, "@")
+    If p > 4 Then lst = lst & Left$(v, p - 1) & "|"
+    AddSender = lst
 End Function
 
 Private Function GetMoveFolder(ByVal allowPick As Boolean) As Object
@@ -530,8 +549,9 @@ End Function
 ' sleeppm
 Public Sub MoveSleeppmNow()
     Dim v As String, days As Long, fld As Object, tbl As Object, arr As Variant, r As Long, t As Date, cutoff As Date
-    Dim C_EID As Long, C_CLASS As Long, C_RCV As Long, C_NAME As Long, C_SND As Long
+    Dim C_EID As Long, C_CLASS As Long, C_RCV As Long, C_NAME As Long, C_SND As Long, C_SADDR As Long
     Dim cand As New Collection, eid As Variant, itm As Object, why As String, toMove As New Collection, n As Long
+    Dim reasons As Object, k As Variant, msg As String
     Init
     LoadSenders
     If Len(m_Senders) <= 1 Then
@@ -556,6 +576,7 @@ Public Sub MoveSleeppmNow()
     C_RCV = AddCol(tbl, "ReceivedTime")
     C_NAME = AddCol(tbl, "SenderName")
     C_SND = AddCol(tbl, PR_SENDER_SMTP_ADDRESS)
+    C_SADDR = AddCol(tbl, "SenderEmailAddress")
     tbl.Sort "[ReceivedTime]", True
     Do Until tbl.EndOfTable
         arr = tbl.GetArray(TABLE_CHUNK)
@@ -564,7 +585,8 @@ Public Sub MoveSleeppmNow()
             t = VDate(AV(arr, r, C_RCV))
             If t <> 0 And t < cutoff Then GoTo Scanned
             If Left$(LCase$(VStr(AV(arr, r, C_CLASS))), 8) = "ipm.note" Then
-                If SenderListed("|" & LCase$(VStr(AV(arr, r, C_SND))) & "|" & LCase$(VStr(AV(arr, r, C_NAME))) & "|") Then
+                If SenderListed("|" & LCase$(VStr(AV(arr, r, C_SND))) & "|" & LCase$(VStr(AV(arr, r, C_NAME))) & "|" & _
+                                LCase$(VStr(AV(arr, r, C_SADDR))) & "|") Then
                     cand.Add VStr(AV(arr, r, C_EID))
                 End If
             End If
@@ -573,11 +595,16 @@ Public Sub MoveSleeppmNow()
     Loop
 Scanned:
     ' 2)
+    Set reasons = CreateObject("Scripting.Dictionary")
     For Each eid In cand
         Set itm = Nothing
         Set itm = GetItemSafe(CStr(eid))
         If Not itm Is Nothing Then
-            If ShouldMove(itm, why) Then toMove.Add CStr(eid)
+            If ShouldMove(itm, why) Then
+                toMove.Add CStr(eid)
+            Else
+                reasons(why) = reasons(why) + 1
+            End If
         End If
         n = n + 1
         If n Mod 20 = 0 Then DoEvents
@@ -585,7 +612,13 @@ Scanned:
     On Error GoTo 0
 
     If toMove.Count = 0 Then
-        MsgBoxU U("\uCD5C\uADFC ") & days & U("\uC77C \uBC1B\uC740 \uD3B8\uC9C0\uD568\uC5D0 \uC62E\uAE38 ") & MOVE_GROUP & U(" \uBA54\uC77C\uC774 \uC5C6\uC2B5\uB2C8\uB2E4."), vbInformation
+        msg = U("\uCD5C\uADFC ") & days & U("\uC77C \uBC1B\uC740 \uD3B8\uC9C0\uD568\uC5D0 \uC62E\uAE38 ") & MOVE_GROUP & U(" \uBA54\uC77C\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.") & vbCrLf & vbCrLf & _
+              U("\uBAA9\uB85D\uC5D0 \uC788\uB294 \uC0AC\uB78C\uC774 \uBCF4\uB0B8 \uBA54\uC77C: ") & cand.Count & U("\uAC74")
+        For Each k In reasons.Keys
+            msg = msg & vbCrLf & "  - " & k & ": " & reasons(k) & U("\uAC74")
+        Next k
+        If cand.Count = 0 Then msg = msg & vbCrLf & vbCrLf & U("(\uBCF4\uB0B8 \uC0AC\uB78C\uC744 \uBABB \uCC3E\uC558\uC2B5\uB2C8\uB2E4. \uBA54\uC77C \uD558\uB098\uB97C \uC120\uD0DD\uD558\uACE0 TestSleeppm \uC744 \uC2E4\uD589\uD574 \uACB0\uACFC\uB97C \uC54C\uB824 \uC8FC\uC138\uC694)")
+        MsgBoxU msg, vbInformation
         Exit Sub
     End If
     If MsgBoxU(U("\uCD5C\uADFC ") & days & U("\uC77C \uBC1B\uC740 \uD3B8\uC9C0\uD568\uC5D0\uC11C ") & MOVE_GROUP & U(" \uC73C\uB85C\uB9CC \uBC1B\uC740 \uBA54\uC77C ") & toMove.Count & U("\uAC74\uC744 \uCC3E\uC558\uC2B5\uB2C8\uB2E4.") & vbCrLf & vbCrLf & _
