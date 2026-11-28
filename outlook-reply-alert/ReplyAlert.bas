@@ -520,8 +520,8 @@ Private Sub RunScheduledChecks()
         GoTo Done
     End If
     ' 0-3) ( ) ( )
-    If GetSetting(SETTINGS_APP, "Cleanup", "PeopleRetag2", "") = "" Then
-        SaveSetting SETTINGS_APP, "Cleanup", "PeopleRetag2", "done"
+    If GetSetting(SETTINGS_APP, "Cleanup", "PeopleRetag3", "") = "" Then
+        SaveSetting SETTINGS_APP, "Cleanup", "PeopleRetag3", "done"
         LoadPeople
         EnsurePeopleFolders
         TagPeopleCore 60
@@ -2328,6 +2328,8 @@ Private Sub LoadPeople()
             For j = LBound(kws) To UBound(kws)
                 kw = LCase$(Trim$(kws(j)))
                 If Len(kw) > 1 Then joined = joined & "|" & kw
+                ' @ ( Exchange )
+                If InStr(1, kw, "@") > 4 Then joined = joined & "|" & Left$(kw, InStr(1, kw, "@") - 1)
             Next j
             If Len(lbl) > 0 And Len(joined) > 0 Then
                 m_PeopleCount = m_PeopleCount + 1
@@ -2984,7 +2986,7 @@ End Sub
 Private Sub PeopleScanFolder(ByVal fld As Object, ByVal cutoff As Date, ByVal rows As Collection)
     Dim tbl As Object, arr As Variant, r As Long, t As Date, sHay As String, tHay As String, conv As String, topic As String, i As Long
     Dim C_EID As Long, C_CLASS As Long, C_RCV As Long, C_NAME As Long, C_SND As Long, C_TO As Long, C_CATS As Long
-    Dim C_CONV As Long, C_TOPIC As Long, C_SUBJ As Long
+    Dim C_CONV As Long, C_TOPIC As Long, C_SUBJ As Long, C_SADDR As Long
     On Error GoTo Done
     Set tbl = fld.GetTable
     tbl.Columns.RemoveAll
@@ -2993,6 +2995,7 @@ Private Sub PeopleScanFolder(ByVal fld As Object, ByVal cutoff As Date, ByVal ro
     C_RCV = AddCol(tbl, "ReceivedTime")
     C_NAME = AddCol(tbl, "SenderName")
     C_SND = AddCol(tbl, PR_SENDER_SMTP_ADDRESS)
+    C_SADDR = AddCol(tbl, "SenderEmailAddress")
     C_TO = AddCol(tbl, PR_DISPLAY_TO)
     C_CATS = AddCol(tbl, "Categories")
     C_CONV = AddCol(tbl, PR_CONVERSATION_ID)
@@ -3007,7 +3010,7 @@ Private Sub PeopleScanFolder(ByVal fld As Object, ByVal cutoff As Date, ByVal ro
             t = VDate(AV(arr, r, C_RCV))
             If t <> 0 And t < cutoff Then GoTo Done
             If Left$(RowClass(arr, r, C_CLASS), 8) = "ipm.note" Then
-                sHay = LCase$(VStr(AV(arr, r, C_NAME)) & "|" & VStr(AV(arr, r, C_SND)))
+                sHay = LCase$(VStr(AV(arr, r, C_NAME)) & "|" & VStr(AV(arr, r, C_SND)) & "|" & VStr(AV(arr, r, C_SADDR)))
                 tHay = LCase$(VStr(AV(arr, r, C_TO)))
                 conv = VHex(AV(arr, r, C_CONV))
                 topic = VStr(AV(arr, r, C_TOPIC))
@@ -3030,7 +3033,7 @@ Private Sub TagPeople(ByVal itm As Object)
     If m_PeopleCount = 0 Then Exit Sub
     If itm.Class <> olMail Then Exit Sub
     If Not m_PeopleSetsReady Then BuildPeopleSets 60, Nothing      ' Outlook
-    sHay = LCase$(itm.SenderName & "|" & GetSenderSmtp(itm))
+    sHay = LCase$(itm.SenderName & "|" & GetSenderSmtp(itm) & "|" & itm.SenderEmailAddress)
     tHay = LCase$(itm.To)
     conv = SafeConvId(itm)
     topic = itm.ConversationTopic
@@ -3081,7 +3084,7 @@ Private Function InPeopleThread(ByVal itm As Object) As Boolean
     On Error Resume Next
     If m_PeopleCount = 0 Then Exit Function
     If Not m_PeopleSetsReady Then BuildPeopleSets 60, Nothing
-    sHay = LCase$(itm.SenderName & "|" & GetSenderSmtp(itm))
+    sHay = LCase$(itm.SenderName & "|" & GetSenderSmtp(itm) & "|" & itm.SenderEmailAddress)
     conv = SafeConvId(itm)
     topic = itm.ConversationTopic
     If Len(topic) = 0 Then topic = itm.Subject
@@ -3156,6 +3159,7 @@ Private Function TagPeopleCore(ByVal days As Long) As String
             want = InThread(i, CStr(rw(2)), CStr(rw(3)))
             If want Then anyWant = True
             has = CatListHas(CStr(rw(1)), m_PeopleLabel(i))
+            If m_PeopleSet(i).Count = 0 Then has = want
             If want Then cnt(i) = cnt(i) + 1
             If want <> has Then
                 If itm Is Nothing Then Set itm = GetItemSafe(CStr(rw(0)))
