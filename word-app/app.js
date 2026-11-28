@@ -100,7 +100,7 @@
     addDay(stats.attend, t);
     const s = streakOf(stats.attend);
     let gain = POINTS.attend + Math.min(POINTS.streakMax, (s - 1) * POINTS.streakStep);
-    let msg = `도장 꾹! +${gain}점`;
+    let msg = `출석 완료 +${gain}점`;
     if (s > 0 && s % 30 === 0) { gain += POINTS.month; msg += ` · ${s}일 연속 보너스 +${POINTS.month}`; }
     else if (s > 0 && s % 7 === 0) { gain += POINTS.week; msg += ` · ${s}일 연속 보너스 +${POINTS.week}`; }
     addPoints(gain);
@@ -267,13 +267,11 @@
     // 채점 기호: 모름 ✕ · 애매 △ · 알아요 ○
     x: '<svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="3.6" stroke-linecap="round" aria-hidden="true"><path d="M7 7l18 18M25 7 7 25"/></svg>',
     tri: '<svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="3.6" stroke-linejoin="round" aria-hidden="true"><path d="M16 5.5 28 26H4z"/></svg>',
-    o: '<svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="3.6" aria-hidden="true"><circle cx="16" cy="16" r="11.5"/></svg>',
-    ring: '<svg class="ring" viewBox="0 0 40 48" fill="none" aria-hidden="true"><circle cx="20" cy="22" r="17" stroke="var(--ring)" stroke-width="4"/><path d="M8 11a17 17 0 0 1 10-6" stroke="#fff" stroke-opacity=".55" stroke-width="1.6" stroke-linecap="round"/></svg>'
+    o: '<svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="3.6" aria-hidden="true"><circle cx="16" cy="16" r="11.5"/></svg>'
   };
-  // 출석 도장 (작은 것) / 참 잘했어요 도장 (큰 것)
-  const stampSvg = (pop) => `<svg class="stamp${pop ? ' pop' : ''}" viewBox="0 0 40 40" fill="none" aria-hidden="true"><circle cx="20" cy="20" r="17.5" stroke="currentColor" stroke-width="2.4"/><circle cx="20" cy="20" r="13.6" stroke="currentColor" stroke-width="1" stroke-dasharray="1.6 2.2"/><text x="20" y="24" text-anchor="middle" font-size="10.5" font-weight="900" fill="currentColor" font-family="inherit">출석</text></svg>`;
-  const BIG_STAMP = '<svg class="bigstamp" viewBox="0 0 132 132" fill="none" role="img" aria-label="참 잘했어요 도장"><circle cx="66" cy="66" r="60" stroke="currentColor" stroke-width="5"/><circle cx="66" cy="66" r="51" stroke="currentColor" stroke-width="1.6" stroke-dasharray="2.5 4"/><text x="66" y="57" text-anchor="middle" font-size="27" font-weight="900" fill="currentColor" font-family="inherit">참</text><text x="66" y="88" text-anchor="middle" font-size="23" font-weight="900" fill="currentColor" font-family="inherit" letter-spacing="-1">잘했어요</text></svg>';
-  const deckColor = (id) => `var(--c-${['basic', 'biz', 'garment'].includes(id) ? id : 'mine'})`;
+  const CHECK = '<path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>';
+  const checkSvg = (pop) => `<svg class="chk${pop ? ' pop' : ''}" viewBox="0 0 24 24" aria-hidden="true">${CHECK}</svg>`;
+  const BIG_CHECK = `<div class="bigchk"><svg viewBox="0 0 24 24" aria-hidden="true">${CHECK}</svg></div>`;
 
   let currentView = 'home';
   function go(view) {
@@ -305,7 +303,7 @@
       const d = t - i;
       const date = dayToDate(d);
       const on = hasDay(stats.attend, d);
-      html += `<div class="day${i === 0 ? ' is-today' : ''}"><span class="slot${on ? ' on' : ''}" aria-label="${date.getMonth() + 1}월 ${date.getDate()}일 ${on ? '출석' : '미출석'}">${on ? stampSvg(pop && i === 0) : date.getDate()}</span>${i === 0 ? '오늘' : names[date.getDay()]}</div>`;
+      html += `<div class="day${i === 0 ? ' is-today' : ''}"><span class="slot${on ? ' on' : ''}" aria-label="${date.getMonth() + 1}월 ${date.getDate()}일 ${on ? '출석' : '미출석'}">${on ? checkSvg(pop && i === 0) : date.getDate()}</span>${i === 0 ? '오늘' : names[date.getDay()]}</div>`;
     }
     return html;
   }
@@ -352,7 +350,7 @@
 
     $('#view-home').innerHTML = `
       <div class="hero">
-        <button class="deckpick" id="switchDeck"><i class="swatch" style="background:${deckColor(deck.id)}"></i>${esc(deck.name)}${ICON.down}<span class="sr">단어장 바꾸기</span></button>
+        <button class="deckpick" id="switchDeck">${esc(deck.name)}${ICON.down}<span class="sr">단어장 바꾸기</span></button>
         ${memo}
         <h1 class="headline">${headline}</h1>
         <div class="tally" role="img" aria-label="오늘 새 단어 ${done}개 완료, 목표 ${settings.daily}개">${cells}</div>
@@ -361,16 +359,16 @@
       </div>
       <div class="band"></div>
       <div class="sec">
-        <div class="sec-head"><h2>출석 도장</h2><span>${attStreak > 0 ? `연속 ${attStreak}일` : '아직 없어요'}</span></div>
+        <div class="sec-head"><h2>출석</h2><span>${attStreak > 0 ? `연속 ${attStreak}일` : '아직 없어요'}</span></div>
         <div class="week">${weekStrip(popStamp)}</div>
         ${attended
-          ? '<button class="line done" id="checkIn" disabled>오늘 도장 찍었어요</button>'
-          : `<button class="line" id="checkIn">오늘 도장 찍기 <b>+${POINTS.attend + Math.min(POINTS.streakMax, attStreak * POINTS.streakStep)}점</b></button>`}
+          ? '<button class="line done" id="checkIn" disabled>오늘 출석 완료</button>'
+          : `<button class="line" id="checkIn">출석 체크 <b>+${POINTS.attend + Math.min(POINTS.streakMax, attStreak * POINTS.streakStep)}점</b></button>`}
         <div class="lvrow"><b>Lv.${lv.lv}</b><div class="lvbar"><i style="width:${Math.round((lv.cur / lv.size) * 100)}%"></i></div><span>다음 레벨까지 ${lv.size - lv.cur}점</span></div>
         <details class="how">
           <summary>점수는 이렇게 받아요</summary>
           <ul>
-            <li>출석 도장 <b>+${POINTS.attend}</b></li>
+            <li>출석 <b>+${POINTS.attend}</b></li>
             <li>연속 출석 하루마다 <b>+${POINTS.streakStep} (최대 ${POINTS.streakMax})</b></li>
             <li>7일 연속 / 30일 연속 <b>+${POINTS.week} / +${POINTS.month}</b></li>
             <li>카드 1장 맞힘 <b>+${POINTS.card}</b></li>
@@ -401,8 +399,7 @@
     const list = decks().map((d) => {
       const seen = d.cards.filter((c) => progress[c.id]).length;
       const sel = isSwitch && d.id === settings.deck;
-      return `<button class="deckrow" data-deck="${d.id}" ${d.cards.length ? '' : 'disabled'}>
-        <i class="mini" style="--c:${deckColor(d.id)}"></i>
+      return `<button class="deckrow${sel ? ' sel' : ''}" data-deck="${d.id}" ${d.cards.length ? '' : 'disabled'}>
         <span class="deckrow-main"><b>${esc(d.name)}</b><span>${esc(d.desc)}${d.id === 'mine' && !d.cards.length ? ' · 단어장 탭에서 넣을 수 있어요' : ''}</span></span>
         <span class="deckrow-cnt">${sel ? '<em>공부 중</em>' : ''}${d.cards.length ? (seen ? `${seen} / ${d.cards.length}` : `${d.cards.length}개`) : '비어 있음'}</span>
       </button>`;
@@ -467,18 +464,17 @@
         <span class="st-n">${S.idx + 1} / ${S.queue.length}</span>
       </div>
       <div class="stage">
-        <div class="ringcard" id="flip" role="button" tabindex="0" aria-label="카드 뒤집기" style="--c:${deckColor(c.deck)}">
+        <div class="fcard" id="flip" role="button" tabindex="0" aria-label="카드 뒤집기">
           <i class="under u2"></i><i class="under u1"></i>
           <div class="flip-in">
-            <div class="face front"><span class="hole"></span><span class="tag">${STATUS_LABEL[st]}</span>${front}</div>
-            <div class="face back"><span class="hole"></span>
+            <div class="face front"><span class="tag">${STATUS_LABEL[st]}</span>${front}</div>
+            <div class="face back">
               <div class="w sm">${esc(c.en)}</div>
               <div class="mean">${esc(c.ko)}</div>
               ${c.ex ? `<div class="ex">${highlight(c.ex, c.en)}</div>` : ''}
               ${sayBtn(c.ex || c.en, c.ex ? '예문 듣기' : '발음 듣기')}
             </div>
           </div>
-          ${ICON.ring}
         </div>
       </div>
       <div class="st-in st-actions" id="actions"><button class="cta" id="showBtn">뜻 보기</button></div>`;
@@ -520,7 +516,7 @@
     el.innerHTML = `
       <div class="st-in st-top"><button class="x" id="closeStudy" aria-label="학습 닫기">${ICON.close}</button><div class="st-line" aria-hidden="true"><i style="width:100%"></i></div><span class="st-n">끝</span></div>
       <div class="stage"><div class="fin">
-        ${BIG_STAMP}
+        ${BIG_CHECK}
         <h1 class="headline">${goalHit ? `오늘 ${settings.daily}개 <mark>끝!</mark>` : `카드 ${S.idx}장 <mark>끝!</mark>`}</h1>
         <div class="fin-nums"><span>알아요 <b>${S.res[2]}</b></span><span>애매 <b>${S.res[1]}</b></span><span>모름 <b>${S.res[0]}</b></span></div>
         <p class="sub">${streakOf(stats.studied)}일째 이어서 공부 중${att ? ` · 출석 +${att}점` : ''}</p>
@@ -544,7 +540,7 @@
   // ---------- 퀴즈 ----------
   let quizMode = 'choice';
   let Q = null;
-  const NUMS = ['①', '②', '③', '④'];
+  const NUMS = ['1', '2', '3', '4'];
   function renderQuizStart() {
     const deck = deckById(settings.deck);
     const seen = deck.cards.filter((c) => progress[c.id]).length;
@@ -651,7 +647,7 @@
     const ds = decks();
     const view = $('#view-words');
     view.innerHTML = `<div class="page" style="gap:0">
-      <input class="under-input" id="wq" type="search" placeholder="단어나 뜻으로 찾기" value="${esc(wQuery)}" aria-label="단어 검색">
+      <input class="under-input search" id="wq" type="search" placeholder="단어나 뜻으로 찾기" value="${esc(wQuery)}" aria-label="단어 검색">
       <div class="tabs" role="group" aria-label="단어장 선택" style="margin-top:8px">
         <button data-f="all" aria-pressed="${wFilter === 'all'}">전체</button>
         ${ds.map((d) => `<button data-f="${d.id}" aria-pressed="${wFilter === d.id}">${esc(d.name)}<small>${d.cards.length}</small></button>`).join('')}

@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" fill="#111111"/><g transform="translate(256 256) scale(1.15) translate(-256 -262)"><g transform="rotate(9 256 270)"><rect x="150" y="128" width="212" height="268" rx="22" fill="#FFA8C8"/></g>
-<g transform="rotate(-7 256 270)"><rect x="150" y="128" width="212" height="268" rx="22" fill="#FFD43B"/>
-<circle cx="256" cy="160" r="13" fill="#111"/>
-<text x="256" y="312" text-anchor="middle" font-family="Inter, DejaVu Sans, sans-serif" font-weight="900" font-size="112" letter-spacing="-5" fill="#111">Aa</text></g>
-<circle cx="250" cy="138" r="27" fill="none" stroke="#B9B9B5" stroke-width="9"/></g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" fill="#111113"/><g transform="translate(256 256) scale(1.15) translate(-256 -262)"><rect x="178" y="118" width="156" height="60" rx="30" fill="#3A3A3F"/>
+<rect x="160" y="140" width="192" height="80" rx="34" fill="#77777D"/>
+<rect x="140" y="166" width="232" height="240" rx="44" fill="#FFFFFF"/>
+<text x="256" y="322" text-anchor="middle" font-family="Inter, DejaVu Sans, sans-serif" font-weight="800" font-size="116" letter-spacing="-6" fill="#111113">Aa</text>
+<circle cx="336" cy="202" r="13" fill="#2F6BFF"/></g></svg>
