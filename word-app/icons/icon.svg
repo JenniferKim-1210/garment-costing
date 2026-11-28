@@ -1,12 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" fill="#2550C4"/>
-  <g transform="rotate(-8 256 256)">
-    <rect x="150" y="166" width="236" height="170" rx="14" fill="#9DB3EE"/>
-  </g>
-  <rect x="126" y="176" width="260" height="184" rx="14" fill="#FDFCF8"/>
-  <rect x="126" y="226" width="260" height="6" fill="#E36B6B"/>
-  <rect x="146" y="268" width="220" height="3" fill="#CFE0F3"/>
-  <rect x="146" y="298" width="220" height="3" fill="#CFE0F3"/>
-  <rect x="146" y="328" width="220" height="3" fill="#CFE0F3"/>
-  <text x="256" y="214" text-anchor="middle" font-family="Inter, DejaVu Sans, sans-serif" font-weight="800" font-size="40" fill="#172033">ABC</text>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" fill="#111111"/><g transform="translate(256 256) scale(1.15) translate(-256 -262)"><g transform="rotate(9 256 270)"><rect x="150" y="128" width="212" height="268" rx="22" fill="#FFA8C8"/></g>
+<g transform="rotate(-7 256 270)"><rect x="150" y="128" width="212" height="268" rx="22" fill="#FFD43B"/>
+<circle cx="256" cy="160" r="13" fill="#111"/>
+<text x="256" y="312" text-anchor="middle" font-family="Inter, DejaVu Sans, sans-serif" font-weight="900" font-size="112" letter-spacing="-5" fill="#111">Aa</text></g>
+<circle cx="250" cy="138" r="27" fill="none" stroke="#B9B9B5" stroke-width="9"/></g></svg>

@@ -1,6 +1,6 @@
 // 단어카드 service worker: 앱 파일을 저장해 두고 오프라인에서도 열리게 합니다.
 // 앱을 수정해서 다시 배포할 때는 CACHE 버전 숫자를 올려 주세요.
-const CACHE = 'wordcard-v1';
+const CACHE = 'wordcard-v2';
 const ASSETS = [
   './',
   './index.html',

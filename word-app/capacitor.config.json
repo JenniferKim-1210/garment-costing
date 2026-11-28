@@ -3,12 +3,12 @@
   "appName": "단어카드",
   "webDir": "www",
   "android": {
-    "backgroundColor": "#E9EDF2"
+    "backgroundColor": "#FFFFFF"
   },
   "plugins": {
     "LocalNotifications": {
       "smallIcon": "ic_stat_notify",
-      "iconColor": "#2550C4"
+      "iconColor": "#E5352B"
     }
   }
 }
