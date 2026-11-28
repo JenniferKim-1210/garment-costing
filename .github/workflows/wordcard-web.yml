@@ -1,0 +1,39 @@
+name: 단어카드 웹앱 배포 (GitHub Pages)
+
+# 저장소 Settings → Pages → Source 를 "GitHub Actions" 로 바꾼 뒤 사용합니다.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'word-app/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: wordcard-pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 웹 파일 모으기
+        working-directory: word-app
+        run: node scripts/build-web.mjs
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: word-app/www
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -21,3 +21,10 @@ Thumbs.db
 
 # BOM files
 BOM_Extract*.xlsx
+
+# 단어카드 앱 (빌드 산출물)
+word-app/node_modules/
+word-app/www/
+word-app/android/
+*.keystore
+*.jks
