@@ -525,6 +525,14 @@ Private Sub RunScheduledChecks()
         RecheckReplyMarksCore
         GoTo Done
     End If
+    ' 0-3) 사람별 목록을 새 기준(그 사람이 보낸 스레드 전체)으로 다시 정리 (한 번만)
+    If GetSetting(SETTINGS_APP, "Cleanup", "PeopleRetag2", "") = "" Then
+        SaveSetting SETTINGS_APP, "Cleanup", "PeopleRetag2", "done"
+        LoadPeople
+        EnsurePeopleFolders
+        TagPeopleCore 60
+        GoTo Done
+    End If
 
     ' 1) 새로 도착한 메일 (회신 알림은 바로)
     If Not ProcessPendingNew() Then GoTo Done
@@ -2326,12 +2334,23 @@ Private Sub LoadPeople()
     On Error Resume Next
     defaults = "# 한 줄에 한 사람:  목록 이름 = 찾을 단어; 찾을 단어; ..." & vbCrLf & _
                "# 찾을 단어는 Outlook 에 보이는 이름이나 메일 주소 일부 (대소문자 무시)" & vbCrLf & _
-               "해리 과장 = Hae Ri; Hailey" & vbCrLf & _
-               "성진 대리 = Sung Jin; Seong Jin; Sungjin; Seongjin; 성진" & vbCrLf
+               "해리 과장 = hrpark2@; Hae Ri; Hailey" & vbCrLf & _
+               "성진 대리 = sjbae2@; Jin Bae; 배성진; Sung Jin; Seong Jin; Sungjin; Seongjin; 성진" & vbCrLf
     txt = ReadUtf8(PeopleFilePath())
     If Len(Trim$(Replace(Replace(txt, vbCr, ""), vbLf, ""))) = 0 Then
         WriteUtf8 PeopleFilePath(), defaults
         txt = defaults
+    End If
+    ' 예전 기본값(이름만)으로 만든 파일에 메일 주소 넣기 (한 번만)
+    If GetSetting(SETTINGS_APP, "Cleanup", "PeopleAddr1", "") = "" Then
+        SaveSetting SETTINGS_APP, "Cleanup", "PeopleAddr1", "done"
+        joined = AddPeopleAddress(txt, "해리 과장", "hrpark2@")
+        joined = AddPeopleAddress(joined, "성진 대리", "sjbae2@; Jin Bae; 배성진")
+        If joined <> txt Then
+            WriteUtf8 PeopleFilePath(), joined
+            txt = joined
+        End If
+        joined = ""
     End If
     m_PeopleCount = 0
     m_PeopleSetsReady = False
@@ -2357,6 +2376,24 @@ Private Sub LoadPeople()
         End If
     Next i
 End Sub
+
+' people.txt 에서 label 줄에 addr 이 없으면 덧붙임
+Private Function AddPeopleAddress(ByVal txt As String, ByVal label As String, ByVal addr As String) As String
+    Dim lines() As String, i As Long, p As Long, first As String
+    lines = Split(Replace(txt, vbCr, ""), vbLf)
+    first = LCase$(Trim$(Split(addr, ";")(0)))
+    For i = LBound(lines) To UBound(lines)
+        p = InStr(1, lines(i), "=")
+        If p > 1 And Left$(Trim$(lines(i)), 1) <> "#" Then
+            If Trim$(Replace(Left$(lines(i), p - 1), ChrW(65279), "")) = label Then
+                If InStr(1, LCase$(lines(i)), first, vbBinaryCompare) = 0 Then
+                    lines(i) = Left$(lines(i), p) & " " & addr & ";" & Mid$(lines(i), p + 1)
+                End If
+            End If
+        End If
+    Next i
+    AddPeopleAddress = Join(lines, vbCrLf)
+End Function
 
 ' 사람 목록 파일을 메모장으로 열기 (저장 후 TagPeopleNow 실행 또는 Outlook 재시작)
 ' ==========================================================================
@@ -3128,8 +3165,7 @@ End Sub
 
 ' 지난 메일에 사람별 범주 붙이기 (받은 편지함 + 하위 폴더 + 보낸 편지함)
 Public Sub TagPeopleNow()
-    Dim v As String, days As Long, rows As New Collection, rw As Variant, i As Long, msg As String
-    Dim want As Boolean, has As Boolean, itm As Object, nAdd As Long, nDel As Long, cnt() As Long, anyWant As Boolean, nRed As Long
+    Dim v As String, days As Long, msg As String
     EnsureInit
     LoadPeople
     If m_PeopleCount = 0 Then
@@ -3146,6 +3182,17 @@ Public Sub TagPeopleNow()
         Exit Sub
     End If
     m_Busy = True
+    msg = TagPeopleCore(days)
+    m_Busy = False
+    MsgBoxU msg, vbInformation
+End Sub
+
+' 지난 메일을 사람별 기준으로 다시 정리하고 결과 문장을 돌려줌
+Private Function TagPeopleCore(ByVal days As Long) As String
+    Dim rows As New Collection, rw As Variant, i As Long, msg As String
+    Dim want As Boolean, has As Boolean, itm As Object, nAdd As Long, nDel As Long, cnt() As Long, anyWant As Boolean, nRed As Long
+    If m_PeopleCount = 0 Then LoadPeople
+    If m_PeopleCount = 0 Then Exit Function
     On Error Resume Next
     EnsurePeopleFolders
     BuildPeopleSets days, rows
@@ -3183,15 +3230,14 @@ Public Sub TagPeopleNow()
         If (nAdd + nDel) Mod 20 = 1 Then DoEvents
     Next rw
     On Error GoTo 0
-    m_Busy = False
     msg = "최근 " & days & "일, 그 사람이 보낸 메일이 있는 스레드 기준으로 정리했습니다." & vbCrLf & _
           "(새로 표시 " & nAdd & "건, 표시 해제 " & nDel & "건, [" & CATEGORY_NAME & "] 에서 뺀 메일 " & nRed & "건)" & vbCrLf
     For i = 1 To m_PeopleCount
         msg = msg & vbCrLf & "  - " & m_PeopleLabel(i) & ": " & cnt(i) & "건"
     Next i
     msg = msg & vbCrLf & vbCrLf & "(즐겨찾기 또는 폴더 목록 > 검색 폴더 에서 보세요)"
-    MsgBoxU msg, vbInformation
-End Sub
+    TagPeopleCore = msg
+End Function
 
 Public Sub ReplyReport()
     Dim v As String, days As Long, cutoff As Date

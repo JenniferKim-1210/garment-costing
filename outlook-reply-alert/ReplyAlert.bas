@@ -519,6 +519,14 @@ Private Sub RunScheduledChecks()
         RecheckReplyMarksCore
         GoTo Done
     End If
+    ' 0-3) ( ) ( )
+    If GetSetting(SETTINGS_APP, "Cleanup", "PeopleRetag2", "") = "" Then
+        SaveSetting SETTINGS_APP, "Cleanup", "PeopleRetag2", "done"
+        LoadPeople
+        EnsurePeopleFolders
+        TagPeopleCore 60
+        GoTo Done
+    End If
 
     ' 1) ( )
     If Not ProcessPendingNew() Then GoTo Done
@@ -2279,12 +2287,22 @@ Private Sub LoadPeople()
     On Error Resume Next
     defaults = U("# \uD55C \uC904\uC5D0 \uD55C \uC0AC\uB78C:  \uBAA9\uB85D \uC774\uB984 = \uCC3E\uC744 \uB2E8\uC5B4; \uCC3E\uC744 \uB2E8\uC5B4; ...") & vbCrLf & _
                U("# \uCC3E\uC744 \uB2E8\uC5B4\uB294 Outlook \uC5D0 \uBCF4\uC774\uB294 \uC774\uB984\uC774\uB098 \uBA54\uC77C \uC8FC\uC18C \uC77C\uBD80 (\uB300\uC18C\uBB38\uC790 \uBB34\uC2DC)") & vbCrLf & _
-               U("\uD574\uB9AC \uACFC\uC7A5 = Hae Ri; Hailey") & vbCrLf & _
-               U("\uC131\uC9C4 \uB300\uB9AC = Sung Jin; Seong Jin; Sungjin; Seongjin; \uC131\uC9C4") & vbCrLf
+               U("\uD574\uB9AC \uACFC\uC7A5 = hrpark2@; Hae Ri; Hailey") & vbCrLf & _
+               U("\uC131\uC9C4 \uB300\uB9AC = sjbae2@; Jin Bae; \uBC30\uC131\uC9C4; Sung Jin; Seong Jin; Sungjin; Seongjin; \uC131\uC9C4") & vbCrLf
     txt = ReadUtf8(PeopleFilePath())
     If Len(Trim$(Replace(Replace(txt, vbCr, ""), vbLf, ""))) = 0 Then
         WriteUtf8 PeopleFilePath(), defaults
         txt = defaults
+    End If
+    If GetSetting(SETTINGS_APP, "Cleanup", "PeopleAddr1", "") = "" Then
+        SaveSetting SETTINGS_APP, "Cleanup", "PeopleAddr1", "done"
+        joined = AddPeopleAddress(txt, U("\uD574\uB9AC \uACFC\uC7A5"), "hrpark2@")
+        joined = AddPeopleAddress(joined, U("\uC131\uC9C4 \uB300\uB9AC"), U("sjbae2@; Jin Bae; \uBC30\uC131\uC9C4"))
+        If joined <> txt Then
+            WriteUtf8 PeopleFilePath(), joined
+            txt = joined
+        End If
+        joined = ""
     End If
     m_PeopleCount = 0
     m_PeopleSetsReady = False
@@ -2310,6 +2328,24 @@ Private Sub LoadPeople()
         End If
     Next i
 End Sub
+
+' people.txt label addr
+Private Function AddPeopleAddress(ByVal txt As String, ByVal label As String, ByVal addr As String) As String
+    Dim lines() As String, i As Long, p As Long, first As String
+    lines = Split(Replace(txt, vbCr, ""), vbLf)
+    first = LCase$(Trim$(Split(addr, ";")(0)))
+    For i = LBound(lines) To UBound(lines)
+        p = InStr(1, lines(i), "=")
+        If p > 1 And Left$(Trim$(lines(i)), 1) <> "#" Then
+            If Trim$(Replace(Left$(lines(i), p - 1), ChrW(65279), "")) = label Then
+                If InStr(1, LCase$(lines(i)), first, vbBinaryCompare) = 0 Then
+                    lines(i) = Left$(lines(i), p) & " " & addr & ";" & Mid$(lines(i), p + 1)
+                End If
+            End If
+        End If
+    Next i
+    AddPeopleAddress = Join(lines, vbCrLf)
+End Function
 
 ' ( TagPeopleNow Outlook )
 ' ==========================================================================
@@ -3069,8 +3105,7 @@ Private Sub EnsurePeopleFolders()
 End Sub
 
 Public Sub TagPeopleNow()
-    Dim v As String, days As Long, rows As New Collection, rw As Variant, i As Long, msg As String
-    Dim want As Boolean, has As Boolean, itm As Object, nAdd As Long, nDel As Long, cnt() As Long, anyWant As Boolean, nRed As Long
+    Dim v As String, days As Long, msg As String
     EnsureInit
     LoadPeople
     If m_PeopleCount = 0 Then
@@ -3087,6 +3122,16 @@ Public Sub TagPeopleNow()
         Exit Sub
     End If
     m_Busy = True
+    msg = TagPeopleCore(days)
+    m_Busy = False
+    MsgBoxU msg, vbInformation
+End Sub
+
+Private Function TagPeopleCore(ByVal days As Long) As String
+    Dim rows As New Collection, rw As Variant, i As Long, msg As String
+    Dim want As Boolean, has As Boolean, itm As Object, nAdd As Long, nDel As Long, cnt() As Long, anyWant As Boolean, nRed As Long
+    If m_PeopleCount = 0 Then LoadPeople
+    If m_PeopleCount = 0 Then Exit Function
     On Error Resume Next
     EnsurePeopleFolders
     BuildPeopleSets days, rows
@@ -3123,15 +3168,14 @@ Public Sub TagPeopleNow()
         If (nAdd + nDel) Mod 20 = 1 Then DoEvents
     Next rw
     On Error GoTo 0
-    m_Busy = False
     msg = U("\uCD5C\uADFC ") & days & U("\uC77C, \uADF8 \uC0AC\uB78C\uC774 \uBCF4\uB0B8 \uBA54\uC77C\uC774 \uC788\uB294 \uC2A4\uB808\uB4DC \uAE30\uC900\uC73C\uB85C \uC815\uB9AC\uD588\uC2B5\uB2C8\uB2E4.") & vbCrLf & _
           U("(\uC0C8\uB85C \uD45C\uC2DC ") & nAdd & U("\uAC74, \uD45C\uC2DC \uD574\uC81C ") & nDel & U("\uAC74, [") & CATEGORY_NAME & U("] \uC5D0\uC11C \uBE80 \uBA54\uC77C ") & nRed & U("\uAC74)") & vbCrLf
     For i = 1 To m_PeopleCount
         msg = msg & vbCrLf & "  - " & m_PeopleLabel(i) & ": " & cnt(i) & U("\uAC74")
     Next i
     msg = msg & vbCrLf & vbCrLf & U("(\uC990\uACA8\uCC3E\uAE30 \uB610\uB294 \uD3F4\uB354 \uBAA9\uB85D > \uAC80\uC0C9 \uD3F4\uB354 \uC5D0\uC11C \uBCF4\uC138\uC694)")
-    MsgBoxU msg, vbInformation
-End Sub
+    TagPeopleCore = msg
+End Function
 
 Public Sub ReplyReport()
     Dim v As String, days As Long, cutoff As Date
